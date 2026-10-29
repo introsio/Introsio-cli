@@ -1,0 +1,11 @@
+{
+  "name": "introsio",
+  "version": "0.1.0",
+  "description": "Connect any coding agent to Introsio, run a Developer Mode project with /introsio-execute, and keep Introsio updated with hooks.",
+  "type": "module",
+  "bin": { "introsio": "cli.mjs" },
+  "engines": { "node": ">=18" },
+  "files": ["cli.mjs", "lib", "hook", "agents", "opencode", "templates", "README.md"],
+  "scripts": { "test": "node test/run.js" },
+  "license": "UNLICENSED"
+}
