@@ -38,6 +38,9 @@ export function isCompletionCall(name, args) {
 
 const RELEASING_STATES = new Set(['blocked', 'pending']);
 
+/** The code the server answers when a project reset revoked this worker's claim (agentExecutionService). */
+const REVOKED_BY_RESET = 'CLAIM_REVOKED_BY_RESET';
+
 const TASK_TOOLS = new Set(['completeTask', 'updateTask', 'updateSubtask', 'undoTaskCompletion', 'claimTask', 'getTaskById']);
 
 /**
@@ -51,9 +54,17 @@ function lostClaim(session, { name, args = {}, result }) {
 	const data = result?.data;
 	if (!claim || !data || !TASK_TOOLS.has(name)) return false;
 	if (Number(data.status) === 404) return true;
+	// The person reset the project's execution while this session held the task (its work no longer counts).
+	if (data.code === REVOKED_BY_RESET) return true;
 	const holder = data.claimedBy?.workerId ?? data.details?.claimedBy?.workerId;
 	return Number(data.status) === 409 && !!holder && holder !== claim.workerId && holder !== args.workerId;
 }
+
+const lostReason = (data) => {
+	if (Number(data.status) === 404) return 'the task no longer exists';
+	if (data.code === REVOKED_BY_RESET) return "the project's execution was reset, so that work no longer counts";
+	return `worker ${data.claimedBy?.workerId ?? data.details?.claimedBy?.workerId} holds it now`;
+};
 
 /** Applies one Introsio tool answer to the session. */
 export function applyIntrosioResult(session, { name, args = {}, result }, now) {
@@ -62,7 +73,7 @@ export function applyIntrosioResult(session, { name, args = {}, result }, now) {
 	if (!result?.ok && lostClaim(session, { name, args, result })) {
 		const claim = session.claims[String(args.taskId)];
 		delete session.claims[String(args.taskId)];
-		session.notes = [...(session.notes ?? []), `Introsio: you no longer hold "${claim.title}" (${Number(data.status) === 404 ? 'the task no longer exists' : `worker ${data.claimedBy?.workerId ?? data.details?.claimedBy?.workerId} holds it now`}). Leave it and claimTask the next one.`].slice(-3);
+		session.notes = [...(session.notes ?? []), `Introsio: you no longer hold "${claim.title}" (${lostReason(data)}). Leave it and claimTask the next one.`].slice(-3);
 		return;
 	}
 	if (!result?.ok || !data) return;
