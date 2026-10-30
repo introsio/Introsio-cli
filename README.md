@@ -130,6 +130,7 @@ as a regression test in `test/edgecases.test.js` (same numbers).
 | R21 | A parallel worker without a workerId was told to reuse its parent's | It is told to pick its own (`<id>-2`) |
 | R22 | A hand-broken settings file was silently replaced by the next command | Commands refuse to write a settings file they cannot read; hooks keep running on defaults |
 | R23 | Internal hook errors vanished | They go to `~/.introsio/errors.log` (1 MB, rotated); `int doctor` shows recent ones; the agent still gets valid output |
+| R24 | On Windows, git (`C:/…`), Node (`C:\…`) and temp folders (`MAHESH~1`) spell one folder three ways, so `int mode` / `int gate` settings were never found by the hooks and edited files looked "outside" the repo (found on the first Windows run) | One canonical spelling (`canonicalPath` / `repoKey` in `lib/paths.mjs`, case-insensitive on Windows) for every settings key and file comparison; CI now runs on Windows, macOS and Linux |
 
 Tested end to end with Claude Code 2.1.312 (headless `claude -p`, a stub Introsio
 MCP server over stdio, the installed hooks):

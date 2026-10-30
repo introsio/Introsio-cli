@@ -1,12 +1,8 @@
 // Features `scope`, `lease`, `compact-recovery` and `reread`: short notes that save the agent work.
 import path from 'node:path';
+import { relativeInside } from '../../lib/paths.mjs';
 
 const IGNORED = /(^|\/)(package-lock\.json|yarn\.lock|pnpm-lock\.yaml|bun\.lockb?|Cargo\.lock|poetry\.lock|go\.sum)$/;
-
-function relative(file, root) {
-	const absolute = path.isAbsolute(file) ? file : path.join(root, file);
-	return path.relative(root, absolute).split(path.sep).join('/');
-}
 
 /** `scope`: a soft warning when an edit lands outside the files the claimed task names. */
 export function scopeNote(session, files, root) {
@@ -15,8 +11,8 @@ export function scopeNote(session, files, root) {
 	const named = claims.flatMap((claim) => claim.files);
 	const outside = [];
 	for (const file of files) {
-		const rel = relative(file, root);
-		if (rel.startsWith('..') || IGNORED.test(rel) || session.warnedFiles.includes(rel)) continue;
+		const rel = relativeInside(root, file);
+		if (!rel || IGNORED.test(rel) || session.warnedFiles.includes(rel)) continue;
 		const inScope = named.some((entry) => {
 			const clean = entry.replace(/\/$/, '');
 			return rel === clean || rel.startsWith(`${clean}/`) || rel.endsWith(`/${clean}`) || path.posix.basename(rel) === clean;

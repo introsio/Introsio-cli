@@ -4,6 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { scratch, makeRepo, git, fire, mcpResult, claimPacket } from './helpers.js';
 import { writeJson } from '../lib/jsonFile.mjs';
+import { repoKey } from '../lib/paths.mjs';
 
 const tests = [];
 const test = (name, fn) => tests.push({ name, fn });
@@ -18,7 +19,7 @@ const complete = (home, repo, sid, outcome = { summary: 's', verification: 'v' }
 }).json;
 const bash = (home, repo, sid, command) => fire(home, 'claude', 'PreToolUse', { session_id: sid, cwd: repo, tool_name: 'Bash', tool_input: { command } }).json;
 const denied = (answer) => answer?.hookSpecificOutput?.permissionDecision === 'deny';
-const config = (home, repo, settings) => writeJson(path.join(home, 'config.json'), { features: {}, repos: { [fs.realpathSync(repo)]: settings } });
+const config = (home, repo, settings) => writeJson(path.join(home, 'config.json'), { features: {}, repos: { [repoKey(repo)]: settings } });
 
 test('local mode (no repository on the claim): uncommitted work blocks completion, a commit unblocks it', () => {
 	const home = scratch();
@@ -96,10 +97,11 @@ test('test gate: a failing check blocks completion; a pass is cached until the w
 	const repo = makeRepo();
 	// The marker lives outside the repo, so flipping it changes the check's result but not the tree.
 	const marker = path.join(scratch('introsio-marker-'), 'pass');
-	fs.writeFileSync(path.join(repo, 'check.sh'), `test -f "${marker}" && echo ok || (echo "1 test failing"; exit 1)\n`);
+	// A node script, not sh: the check must run the same on Windows, macOS and Linux.
+	fs.writeFileSync(path.join(repo, 'check.js'), `const fs = require('node:fs');\nif (fs.existsSync(${JSON.stringify(marker)})) { console.log('ok'); } else { console.log('1 test failing'); process.exit(1); }\n`);
 	git(repo, 'add', '.');
 	git(repo, 'commit', '-q', '-m', 'check');
-	config(home, repo, { mode: 'off', gate: 'sh check.sh' });
+	config(home, repo, { mode: 'off', gate: 'node check.js' });
 	setupSession(home, repo, 't1');
 	assert.match(complete(home, repo, 't1').hookSpecificOutput.permissionDecisionReason, /1 test failing/);
 	fs.writeFileSync(marker, '');
