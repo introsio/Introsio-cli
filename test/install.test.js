@@ -47,14 +47,17 @@ test('the published package: both command names, and every file it needs ships',
 	assert.deepEqual(Object.keys(pkg.bin).sort(), ['int', 'introsio']);
 	assert.equal(pkg.bin.int, pkg.bin.introsio);
 	assert.ok(pkg.publishConfig?.access === 'public' && pkg.repository && pkg.engines?.node);
-	const packed = spawnSync('npm', ['pack', '--dry-run', '--json', '--ignore-scripts'], { cwd: KIT, encoding: 'utf8' });
+	// On Windows npm is npm.cmd, which only starts through a shell.
+	const packed = spawnSync('npm', ['pack', '--dry-run', '--json', '--ignore-scripts'], { cwd: KIT, encoding: 'utf8', shell: process.platform === 'win32' });
 	assert.equal(packed.status, 0, packed.stderr);
 	const files = JSON.parse(packed.stdout)[0].files.map((file) => file.path);
 	for (const needed of ['cli.mjs', 'hook/introsio-hook.mjs', 'hook/engine.mjs', 'templates/execute.md', 'opencode/introsio.template.js', 'agents/claude.mjs', 'lib/lock.mjs', 'README.md']) {
 		assert.ok(files.includes(needed), `${needed} must be in the package`);
 	}
 	assert.ok(!files.some((file) => file.startsWith('test/')), 'tests are not shipped');
-	assert.ok(fs.statSync(path.join(KIT, 'cli.mjs')).mode & 0o100, 'cli.mjs is executable');
+	// Windows has no executable bit (npm writes .cmd shims there); elsewhere the bin must be executable.
+	if (process.platform !== 'win32') assert.ok(fs.statSync(path.join(KIT, 'cli.mjs')).mode & 0o100, 'cli.mjs is executable');
+	assert.match(fs.readFileSync(path.join(KIT, 'cli.mjs'), 'utf8'), /^#!\/usr\/bin\/env node/, 'the bin starts with a node shebang');
 });
 
 test('setup detects agents by their folders and installs into each', () => {
