@@ -1,5 +1,15 @@
 // Feature `worker-id`: one workerId per session, never shared with another live session.
 import os from 'node:os';
+import { isAlive } from '../../lib/processTree.mjs';
+
+/** Without a known agent process, a session counts as live this long after its last hook. */
+export const LIVE_WINDOW_MS = 10 * 60_000;
+
+/** Whether another session is still running: its agent process is alive, or it was heard from recently. */
+export function sessionIsLive(other, now, alive = isAlive) {
+	if (other.agentPid) return alive(other.agentPid);
+	return now - Number(other.lastSeenAt || 0) < LIVE_WINDOW_MS;
+}
 
 export function makeWorkerId(agent, sessionId, host = os.hostname()) {
 	const clean = (value) => String(value ?? '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
@@ -11,7 +21,7 @@ export function makeWorkerId(agent, sessionId, host = os.hostname()) {
 const STARTS_WORK = (name, args) => name === 'claimTask' || (name === 'updateTask' && args?.statusState === 'in_progress');
 
 /** Before claimTask (or a start): refuse a workerId another live session is using, and a second claim without one. */
-export function workerIdDecision(session, others, { name, args = {} }, now) {
+export function workerIdDecision(session, others, { name, args = {} }, now, alive = isAlive) {
 	if (!STARTS_WORK(name, args)) return { type: 'none' };
 	const requested = typeof args.workerId === 'string' ? args.workerId.trim() : '';
 	const held = Object.values(session.claims ?? {});
@@ -20,13 +30,14 @@ export function workerIdDecision(session, others, { name, args = {} }, now) {
 			const mine = session.workerId ?? held[0].workerId;
 			return {
 				type: 'deny',
-				message: `Introsio: pass your workerId "${mine}" — without it the server treats this as a new worker and hands out a second task while you still hold "${held[0].title}".`,
+				message: `Introsio: pass a workerId. To continue "${held[0].title}", use "${mine}". If you are a separate parallel worker (e.g. a subagent), use your own, e.g. "${mine}-2" — without one the server cannot tell workers apart.`,
 			};
 		}
 		return { type: 'none' };
 	}
-	const taken = others.find((other) => other.workerId === requested
-		&& Object.values(other.claims ?? {}).some((claim) => !claim.expiresAt || claim.expiresAt > now));
+	const taken = others.find((other) => Object.values(other.claims ?? {}).some((claim) => (claim.workerId ?? other.workerId) === requested
+		&& (!claim.expiresAt || claim.expiresAt > now))
+		&& sessionIsLive(other, now, alive));
 	if (taken) {
 		const mine = session.workerId && session.workerId !== requested ? session.workerId : null;
 		return {

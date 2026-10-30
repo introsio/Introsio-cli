@@ -20,7 +20,7 @@ export default {
 			return true;
 		});
 		report.connect = mcp.error ?? (mcp.manual ? `manual — add "${SERVER_NAME}": { "serverUrl": "${ctx.url}" } to ${file}` : mcp.changed ? 'added' : 'already connected');
-		report.next.push('In Windsurf: Cascade → MCP servers → refresh, sign in to introsio. For the execute procedure run `introsio print-execute` and save it as a Windsurf rule or workflow.');
+		report.next.push('In Windsurf: Cascade → MCP servers → refresh, sign in to introsio. For the execute procedure run `int print-execute` and save it as a Windsurf rule or workflow.');
 		return report;
 	},
 	uninstall(ctx, writer) {

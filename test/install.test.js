@@ -81,6 +81,33 @@ test('the installed OpenCode plugin loads and exposes its hooks', async () => {
 	assert.equal(typeof hooks.event, 'function');
 });
 
+test('the OpenCode plugin refuses, notes and sends the agent back like the other agents', async () => {
+	const home = scratch();
+	const state = path.join(home, 'state');
+	process.env.INTROSIO_HOME = state;
+	try {
+		cli(home, ['setup', '--agents', 'opencode']);
+		const prompts = [];
+		const plugin = await import(`${path.join(home, '.config', 'opencode', 'plugins', 'introsio.js')}?t=${Date.now()}`);
+		const hooks = await plugin.IntrosioPlugin({ client: { session: { prompt: async (request) => { prompts.push(request); } } }, directory: home });
+		const packet = { claimed: true, workerId: 'oc-1', task: { id: 't1', title: 'OpenCode task' }, project: { id: 'p' } };
+		await hooks['tool.execute.before']({ tool: 'introsio_claimTask', sessionID: 'oc', callID: 'c1' }, { args: { projectId: 'p' } });
+		const after = { title: '', output: JSON.stringify(packet), metadata: {} };
+		await hooks['tool.execute.after']({ tool: 'introsio_claimTask', sessionID: 'oc', callID: 'c1' }, after);
+		await hooks.event({ event: { type: 'session.idle', properties: { sessionID: 'oc' } } });
+		await new Promise((resolve) => { setTimeout(resolve, 20); });
+		assert.equal(prompts.length, 1);
+		assert.equal(prompts[0].path.id, 'oc');
+		assert.match(prompts[0].body.parts[0].text, /OpenCode task/);
+		await assert.rejects(
+			hooks['tool.execute.before']({ tool: 'introsio_claimTask', sessionID: 'oc', callID: 'c2' }, { args: { projectId: 'p' } }),
+			/pass a workerId/,
+		);
+	} finally {
+		delete process.env.INTROSIO_HOME;
+	}
+});
+
 test('uninstall removes only what setup added', () => {
 	const home = scratch();
 	seedForeignConfig(home);

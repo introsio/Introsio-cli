@@ -38,10 +38,33 @@ export function isCompletionCall(name, args) {
 
 const RELEASING_STATES = new Set(['blocked', 'pending']);
 
+const TASK_TOOLS = new Set(['completeTask', 'updateTask', 'updateSubtask', 'undoTaskCompletion', 'claimTask', 'getTaskById']);
+
+/**
+ * A refusal that proves this session no longer holds the task: the task is gone
+ * (404), or another worker holds it now (409 naming someone else). Keeping such
+ * a claim would refuse every stop for a task nobody here can finish.
+ */
+function lostClaim(session, { name, args = {}, result }) {
+	const id = String(args.taskId ?? '');
+	const claim = session.claims[id];
+	const data = result?.data;
+	if (!claim || !data || !TASK_TOOLS.has(name)) return false;
+	if (Number(data.status) === 404) return true;
+	const holder = data.claimedBy?.workerId ?? data.details?.claimedBy?.workerId;
+	return Number(data.status) === 409 && !!holder && holder !== claim.workerId && holder !== args.workerId;
+}
+
 /** Applies one Introsio tool answer to the session. */
 export function applyIntrosioResult(session, { name, args = {}, result }, now) {
 	session.introsio = true;
 	const data = result?.data;
+	if (!result?.ok && lostClaim(session, { name, args, result })) {
+		const claim = session.claims[String(args.taskId)];
+		delete session.claims[String(args.taskId)];
+		session.notes = [...(session.notes ?? []), `Introsio: you no longer hold "${claim.title}" (${Number(data.status) === 404 ? 'the task no longer exists' : `worker ${data.claimedBy?.workerId ?? data.details?.claimedBy?.workerId} holds it now`}). Leave it and claimTask the next one.`].slice(-3);
+		return;
+	}
 	if (!result?.ok || !data) return;
 
 	const projectId = data.project?.id ?? args.projectId ?? null;
@@ -145,8 +168,7 @@ export function applyIntrosioResult(session, { name, args = {}, result }, now) {
  * answers themselves (a claim's work packet, a completion receipt), which are
  * distinctive JSON wherever the agent stores them.
  */
-export function claimsFromTranscript(text, now) {
-	const claims = {};
+export function claimsFromTranscript(text, now, claims = {}) {
 	const visit = (value, depth) => {
 		if (depth > 8 || value === null || value === undefined) return;
 		if (typeof value === 'string') {
@@ -173,4 +195,38 @@ export function claimsFromTranscript(text, now) {
 		try { visit(JSON.parse(line), 0); } catch { /* a partial line */ }
 	}
 	return claims;
+}
+
+const TRANSCRIPT_TAIL_LIMIT = 256 * 1024 * 1024;
+
+/**
+ * Reads only what the transcript gained since the last stop (offset kept in the
+ * session), so a long session is never re-parsed from the start. A transcript
+ * that shrank or was replaced is read again from the beginning.
+ */
+export function updateClaimsFromTranscript(session, file, now, fsImpl) {
+	let stat;
+	try { stat = fsImpl.statSync(file); } catch { return; }
+	const previous = session.transcript?.path === file ? session.transcript : null;
+	let offset = previous && previous.offset <= stat.size ? previous.offset : 0;
+	const claims = offset > 0 ? { ...(previous.claims ?? {}) } : {};
+	if (stat.size - offset > TRANSCRIPT_TAIL_LIMIT) offset = stat.size - TRANSCRIPT_TAIL_LIMIT;
+	if (stat.size > offset) {
+		const fd = fsImpl.openSync(file, 'r');
+		try {
+			const buffer = Buffer.alloc(stat.size - offset);
+			fsImpl.readSync(fd, buffer, 0, buffer.length, offset);
+			let text = buffer.toString('utf8');
+			// Keep a partial last line for next time.
+			const lastNewline = text.lastIndexOf('\n');
+			const complete = lastNewline >= 0 ? text.slice(0, lastNewline + 1) : '';
+			claimsFromTranscript(complete, now, claims);
+			offset += Buffer.byteLength(complete);
+			text = null;
+		} finally {
+			fsImpl.closeSync(fd);
+		}
+	}
+	session.transcript = { path: file, offset, claims };
+	session.claims = { ...claims, ...Object.fromEntries(Object.entries(session.claims).filter(([id]) => claims[id])) };
 }

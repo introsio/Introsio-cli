@@ -80,7 +80,7 @@ export function rereadDecision(session, { name, args = {} }) {
 		session.rereadDenied = session.rereadDenied ?? {};
 		if (session.rereadDenied[key]) return { type: 'none' };
 		session.rereadDenied[key] = true;
-		return { type: 'deny', message: `Introsio: you already read revision ${latest} of this project's context in this session and it has not changed — use what you have. (Call again if you really need it re-sent.)` };
+		return { type: 'deny', message: `Introsio: revision ${latest} of this project's context was already read in this session and has not changed — use what you have. If it is not in your context (you are a subagent, or it was trimmed), call again and it goes through.` };
 	}
 	if ((name === 'getExecutionWaves' || name === 'getProjectPlan') && session.lastCompletion?.nowReady?.length && !session.lastCompletion.rereadDenied) {
 		session.lastCompletion.rereadDenied = true;

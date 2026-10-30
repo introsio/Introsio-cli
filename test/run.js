@@ -5,7 +5,7 @@ import { fileURLToPath } from 'node:url';
 
 const dir = path.dirname(fileURLToPath(import.meta.url));
 let failed = 0;
-for (const file of ['features.test.js', 'hook.test.js', 'git.test.js', 'install.test.js']) {
+for (const file of ['features.test.js', 'hook.test.js', 'git.test.js', 'edgecases.test.js', 'install.test.js']) {
 	console.log(file);
 	const result = spawnSync(process.execPath, [path.join(dir, file)], { stdio: 'inherit' });
 	if (result.status !== 0) failed += 1;

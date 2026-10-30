@@ -56,14 +56,13 @@ test('updateTask blocked releases the task', () => {
 	assert.equal(stop(home, 's4').json, null);
 });
 
-test('loop guard: refuses twice, then lets it stop with a warning', () => {
+test('loop guard: refuses once, then lets a deliberate second stop through with a warning', () => {
 	const home = scratch();
 	claim(home, 's5');
 	assert.equal(stop(home, 's5').json.decision, 'block');
-	assert.equal(stop(home, 's5', { stop_hook_active: true }).json.decision, 'block');
-	const third = stop(home, 's5', { stop_hook_active: true }).json;
-	assert.ok(third.systemMessage, 'third stop is allowed with a visible warning');
-	assert.equal(third.decision, undefined);
+	const second = stop(home, 's5', { stop_hook_active: true }).json;
+	assert.ok(second.systemMessage, 'second stop is allowed with a visible warning');
+	assert.equal(second.decision, undefined);
 });
 
 test('garbage stdin exits 0 with no output', () => {
@@ -94,7 +93,7 @@ test('codex: transcript fallback finds an open claim when after-tool never fired
 	assert.equal(result.json.decision, 'block');
 	// …and a later completion in the transcript closes it.
 	fs.appendFileSync(transcript, `${JSON.stringify({ type: 'function_call_output', payload: { output: JSON.stringify({ success: true, task: { id: 'task-1', completed: true }, nowReady: [] }) } })}\n`);
-	assert.equal(fire(home, 'codex', 'Stop', { session_id: 'cx2', cwd: home, transcript_path: transcript }).json, null);
+	assert.deepEqual(fire(home, 'codex', 'Stop', { session_id: 'cx2', cwd: home, transcript_path: transcript }).json, {}, 'Codex always gets JSON');
 });
 
 test('gemini: AfterAgent refuses with decision deny', () => {
@@ -125,14 +124,14 @@ test('a session that never uses Introsio leaves no state behind', () => {
 	assert.equal(fs.existsSync(path.join(home, 'sessions', 'plain.json')), false);
 });
 
-test('the engine decides in well under 100 ms', () => {
+test('the engine decides in well under 100 ms', async () => {
 	const home = scratch();
 	const env = { INTROSIO_HOME: home };
 	claim(home, 'perf');
 	const evt = normalize('claude', 'Stop', { session_id: 'perf', cwd: home, stop_hook_active: false });
-	handleEvent(evt, { env });
+	await handleEvent(evt, { env });
 	const started = process.hrtime.bigint();
-	for (let i = 0; i < 20; i += 1) handleEvent(evt, { env });
+	for (let i = 0; i < 20; i += 1) await handleEvent(evt, { env });
 	const perCall = Number(process.hrtime.bigint() - started) / 20 / 1e6;
 	assert.ok(perCall < 100, `engine took ${perCall.toFixed(1)} ms`);
 	const spawnStart = Date.now();

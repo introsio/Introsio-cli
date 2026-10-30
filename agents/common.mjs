@@ -102,12 +102,29 @@ export function removeMatcherHooks(root) {
 
 export const hasOurHooks = (root) => isOurs(root?.hooks);
 
-/** The command line an agent runs for one event. */
+/** Forward slashes work for Node and for every shell an agent may use on Windows. */
+const portable = (file) => String(file).replace(/\\/g, '/');
+const quote = (file) => `"${portable(file)}"`;
+
+/**
+ * The command line an agent runs for one event. Globally it names the absolute
+ * Node binary that ran setup: GUI apps (Cursor, VS Code) often start without the
+ * shell's PATH, so a bare `node` (nvm, fnm, Homebrew) is not found there.
+ * In a project it stays `node` + a repo-relative path, since teammates differ.
+ */
 export function hookCommand(ctx, agent, event) {
-	const script = ctx.scope === 'project'
-		? (agent === 'claude' ? '"$CLAUDE_PROJECT_DIR"/.introsio/kit/hook/introsio-hook.mjs' : '.introsio/kit/hook/introsio-hook.mjs')
-		: JSON.stringify(ctx.hookScript);
-	return `node ${script} ${agent}${event ? ` ${event}` : ''}`;
+	const tail = `${agent}${event ? ` ${event}` : ''}`;
+	if (ctx.scope === 'project') {
+		const script = agent === 'claude' ? '"$CLAUDE_PROJECT_DIR"/.introsio/kit/hook/introsio-hook.mjs' : '.introsio/kit/hook/introsio-hook.mjs';
+		return `node ${script} ${tail}`;
+	}
+	return `${quote(ctx.nodePath ?? process.execPath)} ${quote(ctx.hookScript)} ${tail}`;
+}
+
+/** The Node binary a global hook command uses ("" when the command is not ours). */
+export function nodePathOf(command) {
+	const match = String(command ?? '').match(/^"([^"]+)"\s+"[^"]*introsio-hook\.mjs"/);
+	return match ? match[1] : '';
 }
 
 /** The execute procedure, with `$ARGUMENTS` rendered the way an agent's commands expect. */

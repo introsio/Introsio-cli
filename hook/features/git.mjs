@@ -64,7 +64,7 @@ export function pushDecision({ command, mode, git, defaultBranch }) {
 	const pushes = gitInvocations(command).filter((call) => call.sub === 'push');
 	if (pushes.length === 0 || mode === 'off') return { type: 'none' };
 	if (mode === 'local') {
-		return { type: 'deny', message: 'Introsio (local mode): this repository stays on this computer — git push is blocked. Commit locally; switch with `introsio mode github` if it should go to GitHub.' };
+		return { type: 'deny', message: 'Introsio (local mode): this repository stays on this computer — git push is blocked. Commit locally; switch with `int mode github` if it should go to GitHub.' };
 	}
 	const current = git.branch();
 	const main = defaultBranch ?? git.defaultBranch();
@@ -77,7 +77,12 @@ export function pushDecision({ command, mode, git, defaultBranch }) {
 		const deleting = args.includes('--delete') || args.includes('-d');
 		const refspecs = positional.slice(1);
 		if (args.includes('--all') || args.includes('--tags')) continue;
-		const targets = refspecs.length === 0 ? [current] : refspecs.map((spec) => {
+		// A bare push goes where push.default sends it — possibly main from a branch with another name.
+		const bareTarget = () => {
+			const push = git.pushTarget?.();
+			return push ? push.replace(/^[^/]+\//, '') : current;
+		};
+		const targets = refspecs.length === 0 ? [bareTarget()] : refspecs.map((spec) => {
 			const cleaned = spec.replace(/^\+/, '');
 			const dest = cleaned.includes(':') ? cleaned.split(':').pop() : cleaned;
 			return dest === 'HEAD' || dest === '' ? current : dest;
@@ -112,6 +117,18 @@ const SECRET_PATTERNS = [
 const SECRET_FILE = /(^|\/)(\.env(\.[\w-]+)?|id_rsa|id_ed25519|[^/]+\.pem|[^/]+\.p12|credentials\.json)$/;
 const SAFE_ENV_FILE = /\.env\.(example|sample|template|defaults?)$/;
 
+/**
+ * Lines that are explicitly not secrets: the vendors' own documented examples
+ * (AWS's AKIAIOSFODNN7EXAMPLE …) and an allow comment on the line itself.
+ */
+const ALLOWED_LINE = /EXAMPLE|int:allow-secret|pragma:\s*allowlist secret|gitleaks:allow|nosec/i;
+
+function secretKind(content) {
+	if (ALLOWED_LINE.test(content)) return null;
+	for (const [kind, pattern] of SECRET_PATTERNS) if (pattern.test(content)) return kind;
+	return null;
+}
+
 /** Secrets in the added lines of a unified diff. Never returns the value — file, line and kind only. */
 export function scanDiff(diff) {
 	const findings = [];
@@ -126,9 +143,8 @@ export function scanDiff(diff) {
 		const hunk = raw.match(/^@@ -\d+(?:,\d+)? \+(\d+)/);
 		if (hunk) { line = Number(hunk[1]); continue; }
 		if (raw.startsWith('+')) {
-			for (const [kind, pattern] of SECRET_PATTERNS) {
-				if (pattern.test(raw)) { findings.push({ file, line, kind }); break; }
-			}
+			const kind = secretKind(raw);
+			if (kind) findings.push({ file, line, kind });
 			line += 1;
 		} else if (!raw.startsWith('-')) {
 			line += 1;
@@ -141,9 +157,8 @@ export function scanText(file, text) {
 	const findings = [];
 	if (SECRET_FILE.test(file) && !SAFE_ENV_FILE.test(file)) findings.push({ file, line: null, kind: 'secret file' });
 	String(text ?? '').split('\n').forEach((content, index) => {
-		for (const [kind, pattern] of SECRET_PATTERNS) {
-			if (pattern.test(content)) { findings.push({ file, line: index + 1, kind }); break; }
-		}
+		const kind = secretKind(content);
+		if (kind) findings.push({ file, line: index + 1, kind });
 	});
 	return findings;
 }
@@ -156,8 +171,13 @@ export function secretsDecision({ command, git, readFile }) {
 	if (!commit && !push) return { type: 'none' };
 	const stagesFirst = calls.some((call) => call.sub === 'add') || (commit && commit.args.some((arg) => /^-[a-zA-Z]*a/.test(arg) || arg === '--all'));
 	let findings = [];
+	let unreadable = false;
+	const scan = (diff) => {
+		if (diff === null) unreadable = true;
+		else findings = findings.concat(scanDiff(diff));
+	};
 	if (commit) {
-		findings = findings.concat(scanDiff(git.diff(stagesFirst ? ['HEAD'] : ['--cached'])));
+		scan(git.diff(stagesFirst ? ['HEAD'] : ['--cached']));
 		if (calls.some((call) => call.sub === 'add')) {
 			const untracked = git.run(['ls-files', '--others', '--exclude-standard']).out.split('\n').filter(Boolean).slice(0, 200);
 			for (const file of untracked) findings = findings.concat(scanText(file, readFile(file)));
@@ -168,13 +188,16 @@ export function secretsDecision({ command, git, readFile }) {
 			const main = git.defaultBranch();
 			return main && main !== git.branch() ? [`${main}...HEAD`] : null;
 		})();
-		if (range) findings = findings.concat(scanDiff(git.diff(range)));
+		if (range) scan(git.diff(range));
 	}
-	if (findings.length === 0) return { type: 'none' };
+	if (findings.length === 0) {
+		// Too large to read whole (over 128 MB): say so instead of passing it as clean.
+		return unreadable ? { type: 'none', note: 'Introsio: this change is too large to scan for secrets; check it yourself before it is pushed.' } : { type: 'none' };
+	}
 	const unique = [...new Map(findings.map((item) => [`${item.file}:${item.line}:${item.kind}`, item])).values()];
 	const list = unique.slice(0, 8).map((item) => `  ${item.file}${item.line ? `:${item.line}` : ''} — ${item.kind}`).join('\n');
 	return {
 		type: 'deny',
-		message: `Introsio: this ${commit ? 'commit' : 'push'} would publish what looks like a secret:\n${list}\nMove it to an environment variable or an ignored file, remove it from the change (and from earlier commits if it is already in one), then retry. If it is a false positive: introsio disable secrets.`,
+		message: `Introsio: this ${commit ? 'commit' : 'push'} would publish what looks like a secret:\n${list}\nMove it to an environment variable or an ignored file, remove it from the change (and from earlier commits if it is already in one), then retry. A false positive: add the comment int:allow-secret on that line, or turn the check off with: int disable secrets`,
 	};
 }

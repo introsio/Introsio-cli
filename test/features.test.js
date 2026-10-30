@@ -1,7 +1,7 @@
 // One table of cases per feature — pure decisions with fake git / clocks.
 import assert from 'node:assert/strict';
 import { pushDecision, scanDiff, scanText, gitInvocations } from '../hook/features/git.mjs';
-import { shippedDecision, testGateDecision, resolveMode } from '../hook/features/gates.mjs';
+import { shippedDecision, planTestGate, runTestGate, resolveMode, porcelainPaths } from '../hook/features/gates.mjs';
 import { workerIdDecision, makeWorkerId } from '../hook/features/workerId.mjs';
 import { rereadDecision, leaseNote, recoveryNote, scopeNote } from '../hook/features/notes.mjs';
 import { applyIntrosioResult, extractPaths } from '../hook/features/claims.mjs';
@@ -68,6 +68,11 @@ test('secrets: added lines are found with file and line, never the value', () =>
 test('secrets: removed lines and context lines are ignored', () => {
 	assert.equal(scanDiff(`+++ b/x.js\n@@ -1,1 +1,1 @@\n-const key = "${AWS}";\n const ok = 1;\n`).length, 0);
 });
+test("secrets: vendors' documented examples and allow comments are not findings", () => {
+	assert.equal(scanDiff('+++ b/t.js\n@@ -0,0 +1 @@\n+const k = "AKIAIOSFODNN7EXAMPLE";\n').length, 0);
+	assert.equal(scanDiff(`+++ b/t.js\n@@ -0,0 +1 @@\n+const k = "${AWS}"; // int:allow-secret\n`).length, 0);
+	assert.equal(scanDiff(`+++ b/t.js\n@@ -0,0 +1 @@\n+const k = "${AWS}";\n`).length, 1);
+});
 test('secrets: .env is a secret file, .env.example is not', () => {
 	assert.equal(scanDiff('+++ b/.env\n@@ -0,0 +1 @@\n+A=1\n')[0].kind, 'secret file');
 	assert.equal(scanDiff('+++ b/config/.env.example\n@@ -0,0 +1 @@\n+A=1\n').length, 0);
@@ -95,38 +100,59 @@ for (const [label, mode, gitOver, args, expect] of [
 	['github: ahead → deny', 'github', { aheadOfUpstream: () => 2 }, { outcome: { branch: 'feature/x' } }, 'deny'],
 	['github: no branch recorded → deny', 'github', {}, {}, 'deny'],
 	['github: all good → ok', 'github', {}, { outcome: { branch: 'feature/x' } }, 'none'],
+	['github: detached HEAD → deny', 'github', { branch: () => 'HEAD' }, { outcome: { branch: 'x' } }, 'deny'],
+	["local: only the task's files count — someone else's WIP is ignored", 'local', { dirty: () => ['?? my-notes.txt'] }, { outcome: { files: ['src/api.js'] } }, 'none'],
+	["local: the task's own uncommitted file → deny", 'local', { dirty: () => ['?? my-notes.txt', ' M src/api.js'] }, { outcome: { files: ['src/api.js'] } }, 'deny'],
+	['local: a listed folder covers its files', 'local', { dirty: () => [' M src/routes/index.js'] }, { outcome: { files: ['src/routes/'] } }, 'deny'],
 	['off → ok even when dirty', 'off', { dirty: () => [' M a'] }, {}, 'none'],
 	['not a git repo → ok', 'local', { root: () => null, dirty: () => [' M a'] }, {}, 'none'],
 ]) {
 	test(`shipped gate ${label}`, () => {
-		const answer = shippedDecision({ git: fakeGit(gitOver), settings: { mode }, claim: claimFor(mode === 'github' ? { fullName: 'a/b', defaultBranch: 'main' } : null), args });
+		const answer = shippedDecision({ git: fakeGit(gitOver), settings: { mode }, claim: claimFor(mode === 'github' ? { fullName: 'a/b', defaultBranch: 'main' } : null), args, session: emptySession('s', 'claude', NOW) });
 		assert.equal(answer.type, expect, answer.message);
 	});
 }
 
 // ── test gate ────────────────────────────────────────────────────────────────
-test('test gate: fail refuses with the output tail, pass is cached for the same tree', () => {
+const memoryCache = () => {
 	const store = new Map();
-	const cache = { get: (k) => store.get(k), set: (k, v) => store.set(k, v) };
+	return { get: (k) => store.get(k), set: (k, v) => store.set(k, v) };
+};
+test('test gate: fail refuses with the output tail, a pass is cached for the same tree', async () => {
+	const cache = memoryCache();
 	let runs = 0;
 	const settings = { gate: 'npm test', gateTimeoutSec: 60 };
-	const failRun = () => { runs += 1; return { ok: false, code: 1, output: 'FAIL api.test.js\n1 failing', ms: 5 }; };
-	const okRun = () => { runs += 1; return { ok: true, code: 0, output: '', ms: 5 }; };
-	const denied = testGateDecision({ git: fakeGit(), settings, claim: claimFor(null), cache, runGate: failRun, now: NOW });
+	const git = fakeGit({ run: (args) => ({ ok: true, out: args[0] === 'status' ? '' : '' }) });
+	const failRun = async () => { runs += 1; return { ok: false, code: 1, output: 'FAIL api.test.js\n1 failing', ms: 5 }; };
+	const okRun = async () => { runs += 1; return { ok: true, code: 0, output: '', ms: 5 }; };
+	const denied = await runTestGate(planTestGate({ git, settings, cache }), { claim: claimFor(null), cache, runGate: failRun, now: NOW });
 	assert.equal(denied.type, 'deny');
 	assert.match(denied.message, /1 failing/);
-	assert.equal(testGateDecision({ git: fakeGit(), settings, claim: claimFor(null), cache, runGate: okRun, now: NOW }).type, 'none');
-	assert.equal(testGateDecision({ git: fakeGit(), settings, claim: claimFor(null), cache, runGate: okRun, now: NOW }).cached, true);
+	assert.equal((await runTestGate(planTestGate({ git, settings, cache }), { claim: claimFor(null), cache, runGate: okRun, now: NOW })).type, 'none');
+	assert.equal(planTestGate({ git, settings, cache }), null, 'same tree → cached, nothing to run');
 	assert.equal(runs, 2);
-	// Any change to the tree runs it again.
-	testGateDecision({ git: fakeGit({ diff: () => 'changed' }), settings, claim: claimFor(null), cache, runGate: okRun, now: NOW });
-	assert.equal(runs, 3);
+	const changed = fakeGit({ head: () => 'def', run: () => ({ ok: true, out: '' }) });
+	assert.ok(planTestGate({ git: changed, settings, cache }), 'another commit → runs again');
 });
-test('test gate: timeout says so; no gate set → nothing runs', () => {
-	const cache = { get: () => null, set: () => {} };
-	const answer = testGateDecision({ git: fakeGit(), settings: { gate: 'x', gateTimeoutSec: 1 }, claim: claimFor(null), cache, runGate: () => ({ ok: false, timedOut: true }), now: NOW });
+test('test gate: timeout says so; no gate set → nothing runs; an unreadable tree is never cached', async () => {
+	const cache = memoryCache();
+	const plan = planTestGate({ git: fakeGit(), settings: { gate: 'x', gateTimeoutSec: 1 }, cache });
+	const answer = await runTestGate(plan, { claim: claimFor(null), cache, runGate: async () => ({ ok: false, timedOut: true }), now: NOW });
 	assert.match(answer.message, /did not finish in 1s/);
-	assert.equal(testGateDecision({ git: fakeGit(), settings: { gate: null }, claim: claimFor(null), cache, runGate: () => assert.fail('ran'), now: NOW }).type, 'none');
+	assert.equal(planTestGate({ git: fakeGit(), settings: { gate: null }, cache }), null);
+	const broken = fakeGit({ run: () => ({ ok: false, out: '' }) });
+	const brokenPlan = planTestGate({ git: broken, settings: { gate: 'x', gateTimeoutSec: 5 }, cache });
+	assert.equal(brokenPlan.key, null);
+	await runTestGate(brokenPlan, { claim: claimFor(null), cache, runGate: async () => ({ ok: true }), now: NOW });
+	assert.ok(planTestGate({ git: broken, settings: { gate: 'x', gateTimeoutSec: 5 }, cache }), 'still runs next time');
+});
+test('test gate: the timeout is capped below the agents\' hook timeout', () => {
+	assert.equal(planTestGate({ git: fakeGit(), settings: { gate: 'x', gateTimeoutSec: 5000 }, cache: memoryCache() }).timeoutSec, 840);
+});
+test('porcelain paths: plain, renamed and quoted', () => {
+	assert.deepEqual(porcelainPaths(' M src/a.js'), ['src/a.js']);
+	assert.deepEqual(porcelainPaths('R  old.js -> new.js'), ['old.js', 'new.js']);
+	assert.deepEqual(porcelainPaths('?? "with space.js"'), ['with space.js']);
 });
 
 // ── worker id ────────────────────────────────────────────────────────────────
@@ -138,12 +164,19 @@ test('worker id: generated ids are valid and per session', () => {
 test('worker id: a live session using the same workerId blocks the claim', () => {
 	const mine = emptySession('me', 'codex', NOW);
 	mine.workerId = 'codex-host-me';
-	const other = { ...emptySession('other', 'claude', NOW), workerId: 'agent-1', claims: { t: { taskId: 't', expiresAt: NOW + 60_000 } } };
-	const answer = workerIdDecision(mine, [other], { name: 'claimTask', args: { projectId: 'p', workerId: 'agent-1' } }, NOW);
+	const other = { ...emptySession('other', 'claude', NOW), workerId: 'agent-1', agentPid: 4242, claims: { t: { taskId: 't', workerId: 'agent-1', expiresAt: NOW + 60_000 } } };
+	const alive = (pid) => pid === 4242;
+	const answer = workerIdDecision(mine, [other], { name: 'claimTask', args: { projectId: 'p', workerId: 'agent-1' } }, NOW, alive);
 	assert.equal(answer.type, 'deny');
 	assert.match(answer.message, /codex-host-me/);
-	const expired = { ...other, claims: { t: { taskId: 't', expiresAt: NOW - 1 } } };
-	assert.equal(workerIdDecision(mine, [expired], { name: 'claimTask', args: { workerId: 'agent-1' } }, NOW).type, 'none');
+	const expired = { ...other, claims: { t: { taskId: 't', workerId: 'agent-1', expiresAt: NOW - 1 } } };
+	assert.equal(workerIdDecision(mine, [expired], { name: 'claimTask', args: { workerId: 'agent-1' } }, NOW, alive).type, 'none');
+	// The other agent crashed: its process is gone, so its workerId is free to resume with.
+	assert.equal(workerIdDecision(mine, [other], { name: 'claimTask', args: { workerId: 'agent-1' } }, NOW, () => false).type, 'none');
+	// No pid known: live only while heard from in the last 10 minutes.
+	const noPid = { ...other, agentPid: null, lastSeenAt: NOW - 11 * 60_000 };
+	assert.equal(workerIdDecision(mine, [noPid], { name: 'claimTask', args: { workerId: 'agent-1' } }, NOW, alive).type, 'none');
+	assert.equal(workerIdDecision(mine, [{ ...noPid, lastSeenAt: NOW - 60_000 }], { name: 'claimTask', args: { workerId: 'agent-1' } }, NOW, alive).type, 'deny');
 });
 test('worker id: a second claim without workerId while holding a task is refused', () => {
 	const s = session();

@@ -50,7 +50,7 @@ export default {
 		report.next.push('In Claude Code run /mcp, pick "introsio" and sign in. Then: /introsio-execute <project>');
 		writer.writeText(p.command, markdownCommand(ctx, { frontmatter: { 'argument-hint': '<project name or id>' } }));
 		const hooks = editJson(writer, p.settings, (settings) => setMatcherHooks(settings, hookGroups(ctx)));
-		if (hooks.manual || hooks.error) report.hooks = hooks.error ?? `manual — ${p.settings} has comments; add the hooks shown by \`introsio setup --print claude\``;
+		if (hooks.manual || hooks.error) report.hooks = hooks.error ?? `manual — ${p.settings} has comments; add the hooks shown by \`int setup --print claude\``;
 		return report;
 	},
 	uninstall(ctx, writer) {

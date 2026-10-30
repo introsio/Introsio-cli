@@ -12,7 +12,8 @@ export const DISTINCTIVE_TOOLS = new Set([
 ]);
 
 const EVENT_MAP = {
-	claude: { SessionStart: 'session-start', PreToolUse: 'before-tool', PostToolUse: 'after-tool', Stop: 'stop', SubagentStop: 'stop', PreCompact: 'compact' },
+	// SubagentStop is deliberately absent: a subagent must not be held to its parent's claims.
+	claude: { SessionStart: 'session-start', PreToolUse: 'before-tool', PostToolUse: 'after-tool', Stop: 'stop', PreCompact: 'compact' },
 	codex: { SessionStart: 'session-start', PreToolUse: 'before-tool', PostToolUse: 'after-tool', Stop: 'stop', PreCompact: 'compact', PostCompact: 'session-start' },
 	gemini: { SessionStart: 'session-start', BeforeTool: 'before-tool', AfterTool: 'after-tool', AfterAgent: 'stop', PreCompress: 'compact' },
 	cursor: {
@@ -138,7 +139,8 @@ export function normalize(agent, hookEvent, payload) {
 		agent,
 		hookEvent: eventName,
 		event,
-		sessionId: String(p.session_id ?? p.sessionId ?? p.conversation_id ?? p.sessionID ?? 'unknown'),
+		// Without an id, the agent process is the session — never one shared "unknown" for everybody.
+		sessionId: String(p.session_id ?? p.sessionId ?? p.conversation_id ?? p.sessionID ?? `${agent}-pid-${process.ppid}`),
 		cwd: p.cwd ?? (Array.isArray(p.workspace_roots) ? p.workspace_roots[0] : null) ?? process.cwd(),
 		transcriptPath: p.transcript_path ?? p.transcriptPath ?? null,
 		source: eventName === 'PostCompact' || eventName === 'session.compacted' ? 'compact' : (p.source ?? p.trigger ?? null),
@@ -160,9 +162,10 @@ export function normalize(agent, hookEvent, payload) {
 
 	const name = String(p.tool_name ?? p.toolName ?? p.tool ?? '');
 	// Gemini names MCP tools by bare name unless they clash; its payload says which server a tool belongs to.
-	const server = p.mcp_context?.server_name ?? p.mcp_context?.serverName ?? p.server_name ?? null;
+	const server = p.mcp_server ?? p.mcp_context?.server_name ?? p.mcp_context?.serverName ?? p.server_name ?? null;
 	const raw = server && !name.toLowerCase().includes(String(server).toLowerCase()) ? `${server}__${name}` : name;
 	const tool = classifyTool(raw, p.tool_input ?? p.toolInput ?? p.args ?? p.arguments, agent);
 	const response = p.tool_response ?? p.tool_output ?? p.toolResponse ?? p.output ?? p.result;
-	return { ...base, tool, result: event === 'after-tool' ? parseToolResult(response) : null };
+	const durationMs = Number(p.duration_ms);
+	return { ...base, tool, result: event === 'after-tool' ? parseToolResult(response) : null, ...(Number.isFinite(durationMs) ? { durationMs } : {}) };
 }

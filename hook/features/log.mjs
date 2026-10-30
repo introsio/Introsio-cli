@@ -1,4 +1,4 @@
-// Feature `log`: one line per Introsio call in ~/.introsio/log.jsonl, summed up by `introsio stats`.
+// Feature `log`: one line per Introsio call in ~/.introsio/log.jsonl, summed up by `int stats`.
 import fs from 'node:fs';
 import { logPath } from '../../lib/paths.mjs';
 import { appendLine } from '../../lib/jsonFile.mjs';
@@ -20,7 +20,7 @@ export function logRow(session, evt, { name, args = {}, result }, now) {
 		...(data.code ? { code: data.code } : {}),
 		...(args.taskId || data.task?.id ? { taskId: String(args.taskId ?? data.task.id) } : {}),
 		...(args.projectId || data.project?.id ? { projectId: String(args.projectId ?? data.project.id) } : {}),
-		...(started ? { ms: now - started } : {}),
+		...(Number.isFinite(evt.durationMs) ? { ms: evt.durationMs } : started ? { ms: now - started } : {}),
 	};
 }
 
@@ -32,7 +32,7 @@ export function writeLog(row, env) {
 	appendLine(file, JSON.stringify(row));
 }
 
-/** Pure summary of log rows, for `introsio stats`. */
+/** Pure summary of log rows, for `int stats`. */
 export function summarize(rows) {
 	const byTool = new Map();
 	const byTask = new Map();

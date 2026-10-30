@@ -1,11 +1,22 @@
 // The engine's answer in each agent's own hook output format. `null` = print nothing.
+
+/** Nothing a hook says may flood the agent's context. */
+export const MAX_MESSAGE_CHARS = 6000;
+
+export function capMessage(message) {
+	const text = String(message ?? '');
+	return text.length > MAX_MESSAGE_CHARS ? `${text.slice(0, MAX_MESSAGE_CHARS - 40)}\n…(cut — ${text.length} chars in all)` : text;
+}
 //   { type: 'none' | 'deny' | 'context' | 'block' | 'warn', message }
 
 export function respond(agent, evt, answer) {
 	if (!answer || answer.type === 'none' || !answer.message) {
+		// Codex expects JSON on stdout whenever a hook exits 0; Cursor's before-hooks too.
+		if (agent === 'codex') return {};
 		return agent === 'cursor' && evt?.event === 'before-tool' ? {} : null;
 	}
-	const { type, message } = answer;
+	const { type } = answer;
+	const message = capMessage(answer.message);
 	switch (agent) {
 		case 'claude':
 		case 'codex':
@@ -13,7 +24,7 @@ export function respond(agent, evt, answer) {
 				return { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: message } };
 			}
 			if (type === 'block') return { decision: 'block', reason: message };
-			if (type === 'warn') return agent === 'claude' ? { systemMessage: message } : null;
+			if (type === 'warn') return agent === 'claude' ? { systemMessage: message } : {};
 			if (type === 'context') {
 				const hookEventName = evt.hookEvent === 'PostCompact' ? 'SessionStart' : evt.hookEvent;
 				return { hookSpecificOutput: { hookEventName, additionalContext: message } };

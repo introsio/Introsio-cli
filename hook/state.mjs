@@ -24,6 +24,8 @@ export function emptySession(sessionId, agent, now) {
 		lastBlock: null,
 		pending: {},
 		warnedFiles: [],
+		editedFiles: [],
+		agentPid: null,
 		notes: [],
 		contextLost: false,
 		sawIntrosioResult: false,
@@ -35,20 +37,24 @@ export function loadSession(sessionId, agent, now, env) {
 	return stored ? { ...emptySession(sessionId, agent, now), ...stored } : emptySession(sessionId, agent, now);
 }
 
+export function sessionFile(sessionId, env) {
+	return path.join(sessionsDir(env), `${safeName(sessionId)}.json`);
+}
+
 export function sessionExists(sessionId, env) {
-	return fs.existsSync(path.join(sessionsDir(env), `${safeName(sessionId)}.json`));
+	return fs.existsSync(sessionFile(sessionId, env));
 }
 
 export function saveSession(session, env) {
 	writeJson(path.join(sessionsDir(env), `${safeName(session.sessionId)}.json`), session);
 }
 
-/** Every other session seen in the last day (for worker-id collisions and `introsio claims`). */
+/** Every other session seen in the last day (for worker-id collisions and `int claims`). */
 export function loadOtherSessions(sessionId, now, env) {
 	const dir = sessionsDir(env);
 	let names = [];
 	try {
-		names = fs.readdirSync(dir).filter((name) => name.endsWith('.json'));
+		names = fs.readdirSync(dir).filter((name) => name.endsWith('.json') && !name.includes('.tmp'));
 	} catch {
 		return [];
 	}
