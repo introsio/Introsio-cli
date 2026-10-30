@@ -4,10 +4,26 @@ One command connects your coding agents to Introsio, gives them a
 `/introsio-execute` command for running a Developer Mode project, and installs
 hooks that keep Introsio in step with what the agent actually did.
 
+## Install
+
+Needs Node 18 or newer and one or more coding agents.
+
 ```bash
-npx introsio setup             # once published (package `introsio`, command `int`)
-npm i -g introsio && int setup  # or install the `int` command for good
-node agent-kit/cli.mjs setup         # from a clone of this repository
+npx introsio setup            # try it once, nothing stays installed
+```
+
+```bash
+npm install -g introsio       # keeps the `int` command (`introsio` works too)
+```
+
+```bash
+int setup                     # connect your agents, once per computer
+```
+
+From a clone of this repository, before the package is published:
+
+```bash
+node agent-kit/cli.mjs setup
 ```
 
 `setup` finds the agents on this computer, or takes `--agents claude,codex,…`. It
@@ -158,3 +174,19 @@ Tests: `npm run test:agent-kit` from the repo root. They use plain
 
 Hook formats follow each agent's documentation as of October 2026. Agents change
 these often: run `int doctor` after updating an agent.
+
+## Publishing a release (maintainers)
+
+The package is `introsio` on npm (commands `int` and `introsio`).
+
+1. Bump `version` in `package.json` (`int doctor` tells users on older hooks to re-run `int setup`), and merge.
+2. Add the repository secret `NPM_TOKEN` once (an npm Automation token that may publish `introsio`).
+3. Tag the release; `.github/workflows/agent-kit-release.yml` runs the tests, checks the tag against the version, and publishes with provenance:
+
+```bash
+git tag agent-kit-v0.2.0 && git push origin agent-kit-v0.2.0
+```
+
+To publish by hand instead: `npm login`, then `npm publish` from this folder (the tests run first via `prepublishOnly`).
+
+The license is currently `UNLICENSED` (installable, not reusable). Change `license` in `package.json` before the first publish if you want others to be allowed to reuse the code.

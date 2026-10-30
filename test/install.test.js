@@ -34,6 +34,21 @@ function seedForeignConfig(home) {
 	write(path.join(home, '.codeium', 'windsurf', 'mcp_config.json'), JSON.stringify({ mcpServers: {} }));
 }
 
+test('the published package: both command names, and every file it needs ships', () => {
+	const pkg = json(path.join(KIT, 'package.json'));
+	assert.deepEqual(Object.keys(pkg.bin).sort(), ['int', 'introsio']);
+	assert.equal(pkg.bin.int, pkg.bin.introsio);
+	assert.ok(pkg.publishConfig?.access === 'public' && pkg.repository && pkg.engines?.node);
+	const packed = spawnSync('npm', ['pack', '--dry-run', '--json', '--ignore-scripts'], { cwd: KIT, encoding: 'utf8' });
+	assert.equal(packed.status, 0, packed.stderr);
+	const files = JSON.parse(packed.stdout)[0].files.map((file) => file.path);
+	for (const needed of ['cli.mjs', 'hook/introsio-hook.mjs', 'hook/engine.mjs', 'templates/execute.md', 'opencode/introsio.template.js', 'agents/claude.mjs', 'lib/lock.mjs', 'README.md']) {
+		assert.ok(files.includes(needed), `${needed} must be in the package`);
+	}
+	assert.ok(!files.some((file) => file.startsWith('test/')), 'tests are not shipped');
+	assert.ok(fs.statSync(path.join(KIT, 'cli.mjs')).mode & 0o100, 'cli.mjs is executable');
+});
+
 test('setup detects agents by their folders and installs into each', () => {
 	const home = scratch();
 	seedForeignConfig(home);
