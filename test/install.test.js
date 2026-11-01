@@ -98,10 +98,20 @@ test('running setup twice adds everything once and keeps foreign config', () => 
 	}
 });
 
+// OpenCode runs plugins on Bun, which accepts ES modules in a bare .js file. Node 18
+// (and 20 before 20.19) does not detect module syntax without a package scope, so the test
+// imports a copy named .mjs. The installed file itself is unchanged.
+async function importInstalledPlugin(home, query = '') {
+	const source = path.join(home, '.config', 'opencode', 'plugins', 'introsio.js');
+	const copy = path.join(home, `introsio-plugin-${Date.now()}.mjs`);
+	fs.copyFileSync(source, copy);
+	return import(`${pathToFileURL(copy).href}${query}`);
+}
+
 test('the installed OpenCode plugin loads and exposes its hooks', async () => {
 	const home = scratch();
 	cli(home, ['setup', '--agents', 'opencode']);
-	const plugin = await import(pathToFileURL(path.join(home, '.config', 'opencode', 'plugins', 'introsio.js')).href);
+	const plugin = await importInstalledPlugin(home);
 	const hooks = await plugin.IntrosioPlugin({ client: { session: { prompt: async () => {} } }, directory: home });
 	assert.equal(typeof hooks['tool.execute.before'], 'function');
 	assert.equal(typeof hooks.event, 'function');
@@ -114,7 +124,7 @@ test('the OpenCode plugin refuses, notes and sends the agent back like the other
 	try {
 		cli(home, ['setup', '--agents', 'opencode']);
 		const prompts = [];
-		const plugin = await import(`${pathToFileURL(path.join(home, '.config', 'opencode', 'plugins', 'introsio.js')).href}?t=${Date.now()}`);
+		const plugin = await importInstalledPlugin(home);
 		const hooks = await plugin.IntrosioPlugin({ client: { session: { prompt: async (request) => { prompts.push(request); } } }, directory: home });
 		const packet = { claimed: true, workerId: 'oc-1', task: { id: 't1', title: 'OpenCode task' }, project: { id: 'p' } };
 		await hooks['tool.execute.before']({ tool: 'introsio_claimTask', sessionID: 'oc', callID: 'c1' }, { args: { projectId: 'p' } });
