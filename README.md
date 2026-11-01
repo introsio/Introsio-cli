@@ -158,3 +158,8 @@ Tests: `npm run test:agent-kit` from the repo root. They use plain
 
 Hook formats follow each agent's documentation as of October 2026. Agents change
 these often: run `int doctor` after updating an agent.
+
+## License
+
+[MIT](./LICENSE) © Mahesh Rasapalli. This license covers the `int` CLI in
+`agent-kit/` only; the Introsio service it connects to is a separate product.

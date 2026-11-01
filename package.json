@@ -5,7 +5,20 @@
   "type": "module",
   "bin": { "int": "cli.mjs" },
   "engines": { "node": ">=18" },
-  "files": ["cli.mjs", "lib", "hook", "agents", "opencode", "templates", "README.md"],
-  "scripts": { "test": "node test/run.js" },
-  "license": "UNLICENSED"
+  "files": ["cli.mjs", "lib", "hook", "agents", "opencode", "templates", "README.md", "LICENSE", "CHANGELOG.md"],
+  "scripts": {
+    "test": "node test/run.js",
+    "prepublishOnly": "node test/run.js"
+  },
+  "keywords": ["introsio", "mcp", "model-context-protocol", "claude-code", "codex", "gemini-cli", "cursor", "opencode", "coding-agent", "cli"],
+  "author": "Mahesh Rasapalli",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/RASAPALLI-MAHESH/Introsio.git",
+    "directory": "agent-kit"
+  },
+  "homepage": "https://github.com/RASAPALLI-MAHESH/Introsio/tree/main/agent-kit#readme",
+  "bugs": { "url": "https://github.com/RASAPALLI-MAHESH/Introsio/issues" },
+  "publishConfig": { "access": "public", "provenance": true }
 }
