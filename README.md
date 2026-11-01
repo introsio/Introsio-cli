@@ -170,7 +170,7 @@ int print-execute
 - `opencode/introsio.template.js` — the OpenCode plugin (it imports the same engine)
 - `templates/execute.md` — the `/introsio-execute` procedure, rendered into each agent's command format
 
-Tests: `npm run test:agent-kit` from the repo root. They use plain
+Tests: `npm test` in this folder. They use plain
 `node:assert/strict`, a scratch HOME and real git repositories.
 
 Hook formats follow each agent's documentation as of October 2026. Agents change
@@ -185,7 +185,7 @@ The package is `introsio` on npm (commands `int` and `introsio`).
 3. Tag the release; `.github/workflows/agent-kit-release.yml` runs the tests, checks the tag against the version, and publishes with provenance:
 
 ```bash
-git tag agent-kit-v0.2.0 && git push origin agent-kit-v0.2.0
+git tag agent-kit-v0.1.1 && git push origin agent-kit-v0.1.1
 ```
 
 To publish by hand instead: `npm login`, then `npm publish` from this folder (the tests run first via `prepublishOnly`).

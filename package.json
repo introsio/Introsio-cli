@@ -27,12 +27,11 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/RASAPALLI-MAHESH/Introsio.git",
-    "directory": "agent-kit"
+    "url": "git+https://github.com/introsio/Introsio-cli.git"
   },
-  "homepage": "https://github.com/RASAPALLI-MAHESH/Introsio/tree/main/agent-kit#readme",
+  "homepage": "https://github.com/introsio/Introsio-cli#readme",
   "bugs": {
-    "url": "https://github.com/RASAPALLI-MAHESH/Introsio/issues"
+    "url": "https://github.com/introsio/Introsio-cli/issues"
   },
   "keywords": [
     "claude-code",
