@@ -9,7 +9,7 @@ project uses [semantic versioning](https://semver.org/).
 ### Added
 - MIT license (`LICENSE`), `author`, and this changelog.
 
-## [0.2.0]
+## [0.1.0]
 
 - Global setup for Claude Code, Codex, Gemini CLI, Cursor, OpenCode, VS Code
   and Windsurf; `/introsio-execute`; stop-guard and related hooks; `int stats`.

@@ -192,5 +192,5 @@ To publish by hand instead: `npm login`, then `npm publish` from this folder (th
 
 ## License
 
-[MIT](./LICENSE) © Mahesh Rasapalli. This license covers the `int` CLI in
+[MIT](./LICENSE) © 2026 Introsio. This license covers the `int` CLI in
 `agent-kit/` only; the Introsio service it connects to is a separate product.
