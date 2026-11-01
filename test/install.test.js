@@ -3,11 +3,19 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
+import { pathToFileURL } from 'node:url';
 import { scratch, KIT, makeRepo } from './helpers.js';
 
 const tests = [];
 const test = (name, fn) => tests.push({ name, fn });
 const ALL = 'claude,codex,gemini,cursor,opencode,vscode,windsurf';
+
+/** Where the VS Code adapter looks, per platform (the tests run on all three). */
+function vscodeUserDir(home) {
+	if (process.platform === 'darwin') return path.join(home, 'Library', 'Application Support', 'Code', 'User');
+	if (process.platform === 'win32') return path.join(home, 'AppData', 'Roaming', 'Code', 'User');
+	return path.join(home, '.config', 'Code', 'User');
+}
 
 function cli(home, args, cwd = home) {
 	const result = spawnSync(process.execPath, [path.join(KIT, 'cli.mjs'), ...args], {
@@ -30,9 +38,27 @@ function seedForeignConfig(home) {
 	write(path.join(home, '.gemini', 'settings.json'), JSON.stringify({ theme: 'dark', mcpServers: { other: { httpUrl: 'https://other' } } }));
 	write(path.join(home, '.cursor', 'hooks.json'), JSON.stringify({ version: 1, hooks: { stop: [{ command: 'mine.sh' }] } }));
 	write(path.join(home, '.config', 'opencode', 'opencode.json'), JSON.stringify({ theme: 'x' }));
-	write(path.join(home, '.config', 'Code', 'User', 'mcp.json'), JSON.stringify({ servers: { other: { type: 'http', url: 'https://other' } } }));
+	write(path.join(vscodeUserDir(home), 'mcp.json'), JSON.stringify({ servers: { other: { type: 'http', url: 'https://other' } } }));
 	write(path.join(home, '.codeium', 'windsurf', 'mcp_config.json'), JSON.stringify({ mcpServers: {} }));
 }
+
+test('the published package: both command names, and every file it needs ships', () => {
+	const pkg = json(path.join(KIT, 'package.json'));
+	assert.deepEqual(Object.keys(pkg.bin).sort(), ['int', 'introsio']);
+	assert.equal(pkg.bin.int, pkg.bin.introsio);
+	assert.ok(pkg.publishConfig?.access === 'public' && pkg.repository && pkg.engines?.node);
+	// On Windows npm is npm.cmd, which only starts through a shell.
+	const packed = spawnSync('npm', ['pack', '--dry-run', '--json', '--ignore-scripts'], { cwd: KIT, encoding: 'utf8', shell: process.platform === 'win32' });
+	assert.equal(packed.status, 0, packed.stderr);
+	const files = JSON.parse(packed.stdout)[0].files.map((file) => file.path);
+	for (const needed of ['cli.mjs', 'hook/introsio-hook.mjs', 'hook/engine.mjs', 'templates/execute.md', 'opencode/introsio.template.js', 'agents/claude.mjs', 'lib/lock.mjs', 'README.md']) {
+		assert.ok(files.includes(needed), `${needed} must be in the package`);
+	}
+	assert.ok(!files.some((file) => file.startsWith('test/')), 'tests are not shipped');
+	// Windows has no executable bit (npm writes .cmd shims there); elsewhere the bin must be executable.
+	if (process.platform !== 'win32') assert.ok(fs.statSync(path.join(KIT, 'cli.mjs')).mode & 0o100, 'cli.mjs is executable');
+	assert.match(fs.readFileSync(path.join(KIT, 'cli.mjs'), 'utf8'), /^#!\/usr\/bin\/env node/, 'the bin starts with a node shebang');
+});
 
 test('setup detects agents by their folders and installs into each', () => {
 	const home = scratch();
@@ -65,9 +91,9 @@ test('running setup twice adds everything once and keeps foreign config', () => 
 	assert.equal(cursor.hooks.stop.length, 2);
 	assert.equal(json(path.join(home, '.config', 'opencode', 'opencode.json')).mcp.introsio.type, 'remote');
 	assert.match(read(path.join(home, '.config', 'opencode', 'plugins', 'introsio.js')), /file:\/\/.*\.introsio\/kit\/hook\/engine\.mjs/);
-	assert.equal(json(path.join(home, '.config', 'Code', 'User', 'mcp.json')).servers.introsio.type, 'http');
+	assert.equal(json(path.join(vscodeUserDir(home), 'mcp.json')).servers.introsio.type, 'http');
 	assert.equal(json(path.join(home, '.codeium', 'windsurf', 'mcp_config.json')).mcpServers.introsio.serverUrl, 'https://api.introsio.app/mcp?toolset=developer');
-	for (const file of ['.claude/commands/introsio-execute.md', '.codex/prompts/introsio-execute.md', '.gemini/commands/introsio-execute.toml', '.cursor/commands/introsio-execute.md', '.config/opencode/commands/introsio-execute.md', '.config/Code/User/prompts/introsio-execute.prompt.md']) {
+	for (const file of ['.claude/commands/introsio-execute.md', '.codex/prompts/introsio-execute.md', '.gemini/commands/introsio-execute.toml', '.cursor/commands/introsio-execute.md', '.config/opencode/commands/introsio-execute.md', path.relative(home, path.join(vscodeUserDir(home), 'prompts', 'introsio-execute.prompt.md'))]) {
 		assert.ok(fs.existsSync(path.join(home, file)), file);
 	}
 });
@@ -75,7 +101,7 @@ test('running setup twice adds everything once and keeps foreign config', () => 
 test('the installed OpenCode plugin loads and exposes its hooks', async () => {
 	const home = scratch();
 	cli(home, ['setup', '--agents', 'opencode']);
-	const plugin = await import(path.join(home, '.config', 'opencode', 'plugins', 'introsio.js'));
+	const plugin = await import(pathToFileURL(path.join(home, '.config', 'opencode', 'plugins', 'introsio.js')).href);
 	const hooks = await plugin.IntrosioPlugin({ client: { session: { prompt: async () => {} } }, directory: home });
 	assert.equal(typeof hooks['tool.execute.before'], 'function');
 	assert.equal(typeof hooks.event, 'function');
@@ -88,7 +114,7 @@ test('the OpenCode plugin refuses, notes and sends the agent back like the other
 	try {
 		cli(home, ['setup', '--agents', 'opencode']);
 		const prompts = [];
-		const plugin = await import(`${path.join(home, '.config', 'opencode', 'plugins', 'introsio.js')}?t=${Date.now()}`);
+		const plugin = await import(`${pathToFileURL(path.join(home, '.config', 'opencode', 'plugins', 'introsio.js')).href}?t=${Date.now()}`);
 		const hooks = await plugin.IntrosioPlugin({ client: { session: { prompt: async (request) => { prompts.push(request); } } }, directory: home });
 		const packet = { claimed: true, workerId: 'oc-1', task: { id: 't1', title: 'OpenCode task' }, project: { id: 'p' } };
 		await hooks['tool.execute.before']({ tool: 'introsio_claimTask', sessionID: 'oc', callID: 'c1' }, { args: { projectId: 'p' } });
@@ -131,7 +157,7 @@ test('uninstall removes only what setup added', () => {
 
 test('a config file with comments is never rewritten — setup prints what to add', () => {
 	const home = scratch();
-	const file = path.join(home, '.config', 'Code', 'User', 'mcp.json');
+	const file = path.join(vscodeUserDir(home), 'mcp.json');
 	const original = '{\n  // my servers\n  "servers": {}\n}\n';
 	write(file, original);
 	const { out } = cli(home, ['setup', '--agents', 'vscode']);
@@ -175,11 +201,11 @@ test('mode / gate / features / claims / stats / doctor commands', () => {
 	const repo = makeRepo();
 	assert.match(cli(home, ['mode', 'local'], repo).out, /stays on this computer/);
 	assert.match(cli(home, ['mode'], repo).out, /local/);
-	assert.match(cli(home, ['gate', 'set', 'true', '--timeout', '30'], repo).out, /"true"/);
+	assert.match(cli(home, ['gate', 'set', 'node -v', '--timeout', '30'], repo).out, /"node -v"/);
 	assert.match(cli(home, ['gate', 'run'], repo).out, /passed/);
 	assert.match(cli(home, ['disable', 'secrets']).out, /secrets: off/);
 	assert.match(cli(home, ['features']).out, /· secrets/);
-	assert.match(cli(home, ['status'], repo).out, /mode local · test gate "true"/);
+	assert.match(cli(home, ['status'], repo).out, /mode local · test gate "node -v"/);
 	assert.match(cli(home, ['claims']).out, /No open claims/);
 	assert.match(cli(home, ['stats']).out, /No Introsio calls/);
 	cli(home, ['setup', '--agents', 'claude']);

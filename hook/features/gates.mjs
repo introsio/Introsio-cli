@@ -3,6 +3,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { runCommand } from '../../lib/processTree.mjs';
+import { relativeInside } from '../../lib/paths.mjs';
 
 /** Agents kill a hook after 900 s (the timeout setup writes); the gate must finish well before. */
 export const MAX_GATE_TIMEOUT_SEC = 840;
@@ -19,11 +20,6 @@ export function porcelainPaths(line) {
 	return body.includes(' -> ') ? body.split(' -> ').map(unquote) : [unquote(body)];
 }
 
-function normalizeRel(file, root) {
-	const absolute = path.isAbsolute(file) ? file : path.join(root, file);
-	return path.relative(root, absolute).split(path.sep).join('/');
-}
-
 /**
  * The files this task is about: what the agent edited in this session plus what
  * it lists in outcome.files. Uncommitted changes elsewhere — the person's own
@@ -32,8 +28,8 @@ function normalizeRel(file, root) {
 export function taskFiles({ session, args, root }) {
 	const files = new Set();
 	for (const file of session?.editedFiles ?? []) files.add(file);
-	for (const file of args?.outcome?.files ?? []) if (typeof file === 'string' && file.trim()) files.add(normalizeRel(file.trim(), root));
-	return [...files].filter((file) => file && !file.startsWith('..'));
+	for (const file of args?.outcome?.files ?? []) if (typeof file === 'string' && file.trim()) { const rel = relativeInside(root, file.trim()); if (rel) files.add(rel); }
+	return [...files].filter(Boolean);
 }
 
 const touches = (dirtyPath, files) => files.some((file) => dirtyPath === file || dirtyPath.startsWith(`${file.replace(/\/$/, '')}/`) || file.startsWith(`${dirtyPath.replace(/\/$/, '')}/`));

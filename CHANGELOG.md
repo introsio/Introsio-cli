@@ -7,7 +7,7 @@ project uses [semantic versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
-- MIT license, npm metadata, tag-triggered release workflow with provenance.
+- MIT license (`LICENSE`), `author`, and this changelog.
 
 ## [0.2.0]
 

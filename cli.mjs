@@ -187,7 +187,7 @@ function status(flags) {
 	out(`Features: ${Object.keys(FEATURES).map((name) => `${name}${featureOn(config, name) ? '' : ' (off)'}`).join(', ')}`);
 	const root = createGit(process.cwd()).root();
 	if (root) {
-		const settings = repoSettings(config, path.resolve(root));
+		const settings = repoSettings(config, root);
 		out(`This repo (${root}): mode ${settings.mode ?? 'auto (github if the project is linked to GitHub, else local)'} · test gate ${settings.gate ? `"${settings.gate}" (${settings.gateTimeoutSec}s)` : 'off'}`);
 	}
 	if (String(process.env.INTROSIO_HOOKS ?? '').toLowerCase() === 'off') out('INTROSIO_HOOKS=off is set in this shell — hooks do nothing here.');

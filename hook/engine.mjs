@@ -8,7 +8,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { loadConfig, featureOn, repoSettings } from '../lib/config.mjs';
 import { createGit } from '../lib/git.mjs';
-import { gateCachePath, sessionsDir } from '../lib/paths.mjs';
+import { gateCachePath, sessionsDir, relativeInside } from '../lib/paths.mjs';
 import { readJsonSafe, writeJson } from '../lib/jsonFile.mjs';
 import { acquireLock } from '../lib/lock.mjs';
 import { agentPid } from '../lib/processTree.mjs';
@@ -62,13 +62,6 @@ const context = (notes) => {
 	const text = notes.filter(Boolean).join('\n');
 	return text ? { type: 'context', message: text } : NONE;
 };
-
-function relativeTo(root, file) {
-	if (!root || !file) return null;
-	const absolute = path.isAbsolute(file) ? file : path.join(root, file);
-	const rel = path.relative(root, absolute).split(path.sep).join('/');
-	return rel && !rel.startsWith('..') ? rel : null;
-}
 
 export async function handleEvent(evt, deps = {}) {
 	const env = deps.env ?? process.env;
@@ -167,7 +160,7 @@ export async function handleEvent(evt, deps = {}) {
 					const root = git().root();
 					const edited = new Set(session.editedFiles ?? []);
 					for (const file of tool.files ?? []) {
-						const rel = relativeTo(root, file);
+						const rel = relativeInside(root, file);
 						if (rel) edited.add(rel);
 					}
 					session.editedFiles = [...edited].slice(-MAX_EDITED_FILES);
