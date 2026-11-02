@@ -129,6 +129,8 @@ export function recordPause({ git, session, args = {}, data = {}, now, env, gate
 		sessionId: session.sessionId,
 		host: os.hostname(),
 		at: new Date(now).toISOString(),
+		// The server's own time stamp of this pause: what ties this record to it at resume (localMatchesPause).
+		pausedAt: typeof data.pausedAt === 'string' ? data.pausedAt : null,
 		release: args.release === true,
 		note: typeof args.handoff?.note === 'string' ? args.handoff.note.slice(0, 600) : null,
 		...(pending ? {
@@ -166,7 +168,37 @@ export function pauseInAnswer(name, data) {
 	if (name === 'claimTask' && data.claimed === true && data.resumedPause && data.task?.id) {
 		return { taskId: String(data.task.id), pause: data.resumedPause, resumed: true, changed: data.taskChangedSincePause === true };
 	}
+	// The worker that paused a task may start it again with updateTask in_progress; the answer carries the pause.
+	if (name === 'updateTask' && data.resumedPause && data.task?.id) {
+		return { taskId: String(data.task.id), pause: data.resumedPause, resumed: true, changed: data.taskChangedSincePause === true };
+	}
 	return null;
+}
+
+const sameSha = (a, b) => {
+	const x = String(a ?? '').toLowerCase();
+	const y = String(b ?? '').toLowerCase();
+	return x.length >= 7 && y.length >= 7 && (x.startsWith(y) || y.startsWith(x));
+};
+
+/**
+ * Whether the local record on this computer belongs to the pause the server
+ * reports. A task can be resumed and paused again elsewhere while an old
+ * record stays here (it is removed only when this computer sees the task
+ * completed), and an old record must never replace the current pause's facts.
+ */
+export function localMatchesPause(local, pause = {}) {
+	if (!local) return false;
+	const serverAt = Date.parse(pause.at ?? '');
+	const localAt = Date.parse(local.pausedAt ?? '');
+	// Exact: the record kept the server's own time stamp of the pause.
+	if (Number.isFinite(serverAt) && Number.isFinite(localAt)) return serverAt === localAt;
+	// Older records: the snapshot commit is unique to one pause.
+	if (pause.git?.snapshot && local.snapshot) return sameSha(pause.git.snapshot, local.snapshot);
+	// No snapshot on either side: the same worker at the same commit.
+	if (pause.workerId && local.workerId && pause.workerId !== local.workerId) return false;
+	if (pause.git?.head && local.head) return sameSha(pause.git.head, local.head);
+	return false;
 }
 
 /**
@@ -175,11 +207,14 @@ export function pauseInAnswer(name, data) {
  *
  * @returns {{ verdict: 'exact'|'drift'|'blocked', lines: string[], restore: string|null }}
  */
-export function resumeReport({ git, taskId, pause = {}, local = null, others = [], now = Date.now(), alive, taskChanged = false, gatePassedNow = null }) {
+export function resumeReport({ git, taskId, pause = {}, local: storedLocal = null, others = [], now = Date.now(), alive, taskChanged = false, gatePassedNow = null }) {
 	const blocked = [];
 	const drift = [];
 	const ok = [];
 	let restore = null;
+	// A record left by an earlier pause of this task says nothing about this one: ignore it (and its snapshot ref).
+	const local = localMatchesPause(storedLocal, pause) ? storedLocal : null;
+	if (storedLocal && !local) ok.push('an older pause record of this task on this computer was ignored (it belongs to an earlier pause)');
 	const pausedGit = { ...(pause.git ?? {}) };
 	// The local record is exact (it was read from git by the hook); the server's copy was typed by the agent.
 	for (const field of ['branch', 'head', 'snapshot', 'dirtyFiles']) if (local?.[field] !== undefined && local[field] !== null) pausedGit[field] = local[field];

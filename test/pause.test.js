@@ -7,7 +7,7 @@ import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { scratch, makeRepo, git, fire, mcpResult, claimPacket, KIT } from './helpers.js';
 import { createGit } from '../lib/git.mjs';
-import { resumeReport, pauseRef } from '../hook/features/pause.mjs';
+import { resumeReport, pauseRef, localMatchesPause } from '../hook/features/pause.mjs';
 import { pushDecision } from '../hook/features/git.mjs';
 
 const tests = [];
@@ -267,6 +267,52 @@ test('the pause can be switched off like every feature', () => {
 	fs.writeFileSync(path.join(home, 'config.json'), JSON.stringify({ features: { pause: false } }));
 	const args = { taskId: TASK, workerId: 'w1', handoff: { git: { head: 'deadbeef' } } };
 	assert.equal(denial(pre(home, 's1', repo, 'pauseTask', args)), null);
+});
+
+test('resume: a local record from an earlier pause never replaces the current pause (re-paused on another computer)', () => {
+	const { home, repo } = pausedSetup();
+	const { exact } = pause(home, repo);
+	// Resumed and paused again on another computer: a new pause, no snapshot here, different unfinished files.
+	const current = serverPause({ branch: 'feat/x', head: exact.head, dirtyFiles: ['src/other.js'] }, { at: '2026-11-03T09:00:00.000Z', workerId: 'w9', host: 'office-desktop' });
+	const report = resumeCheck(home, 's2', repo, current);
+	assert.match(report, /: BLOCKED/, report);
+	assert.match(report, /paused on office-desktop/);
+	assert.match(report, /older pause record of this task on this computer was ignored/);
+	// The local record's own pause still checks EXACT against it.
+	assert.match(resumeCheck(home, 's3', repo, serverPause(exact)), /: EXACT/);
+});
+
+test('resume: the record is tied to its pause by the server\'s time stamp, else by snapshot, else worker + HEAD', () => {
+	const at = '2026-11-02T10:00:00.000Z';
+	assert.equal(localMatchesPause({ pausedAt: at, snapshot: 'a'.repeat(40) }, { at, git: { snapshot: 'b'.repeat(40) } }), true, 'the time stamp decides');
+	assert.equal(localMatchesPause({ pausedAt: at }, { at: '2026-11-02T10:00:01.000Z' }), false);
+	assert.equal(localMatchesPause({ snapshot: 'abcdef1234' }, { git: { snapshot: 'abcdef1234567' } }), true);
+	assert.equal(localMatchesPause({ snapshot: 'abcdef1234' }, { git: { snapshot: '1234567abc' } }), false);
+	assert.equal(localMatchesPause({ workerId: 'w1', head: 'c'.repeat(40) }, { workerId: 'w1', git: { head: 'c'.repeat(12) } }), true);
+	assert.equal(localMatchesPause({ workerId: 'w1', head: 'c'.repeat(40) }, { workerId: 'w2', git: { head: 'c'.repeat(40) } }), false);
+	assert.equal(localMatchesPause(null, { at }), false);
+	assert.equal(localMatchesPause({}, {}), false);
+});
+
+test('pause: the local record keeps the server\'s pausedAt', () => {
+	const { home, repo } = pausedSetup();
+	const args = { taskId: TASK, workerId: 'w1', handoff: { note: 'n', git: { branch: 'feat/x', head: 'deadbeef' } } };
+	const exact = JSON.parse(denial(pre(home, 's1', repo, 'pauseTask', args)).replace(/^[^{]*/, ''));
+	args.handoff.git = exact;
+	pre(home, 's1', repo, 'pauseTask', args);
+	post(home, 's1', repo, 'pauseTask', args, { success: true, task: { id: TASK, title: 'Build the API', paused: true }, pausedAt: '2026-11-02T10:00:00.000Z' });
+	const record = JSON.parse(fs.readFileSync(path.join(home, 'pauses', `${TASK}.json`), 'utf8'));
+	assert.equal(record.pausedAt, '2026-11-02T10:00:00.000Z');
+});
+
+test('resume: its own worker starting a paused task with updateTask gets the resume check too', () => {
+	const { home, repo } = pausedSetup();
+	const { exact } = pause(home, repo);
+	const answer = post(home, 's1', repo, 'updateTask', { taskId: TASK, workerId: 'w1', statusState: 'in_progress' }, {
+		success: true, workerId: 'w1', task: { id: TASK, title: 'Build the API', statusState: 'in_progress' }, resumedPause: serverPause(exact), taskChangedSincePause: false,
+	});
+	assert.match(contextOf(answer), /resume check for "Build the API": EXACT/);
+	assert.match(contextOf(answer), /You hold the task again/);
 });
 
 let failed = 0;
