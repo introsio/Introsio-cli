@@ -4,6 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { sessionsDir } from '../lib/paths.mjs';
 import { readJsonSafe, writeJson } from '../lib/jsonFile.mjs';
+import { acquireLock, SAVE_WAIT_MS } from '../lib/lock.mjs';
 
 export const SESSION_TTL_MS = 24 * 60 * 60 * 1000;
 
@@ -47,6 +48,54 @@ export function sessionExists(sessionId, env) {
 
 export function saveSession(session, env) {
 	writeJson(path.join(sessionsDir(env), `${safeName(session.sessionId)}.json`), session);
+}
+
+const KEYED = ['claims', 'paused', 'pending', 'pendingPause', 'contextRevision', 'contextRead', 'rereadDenied', 'resumeChecked'];
+const LISTS = ['editedFiles', 'warnedFiles'];
+const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
+const isMap = (value) => !!value && typeof value === 'object' && !Array.isArray(value);
+
+/**
+ * When the session lock could not be taken in time, other hooks of the same
+ * session may have written meanwhile: apply only what THIS hook changed (since
+ * `start`, the session as it was loaded) on top of what is on disk now, instead
+ * of overwriting their claims with a stale copy.
+ */
+export function mergeSessionChanges(start, ours, disk) {
+	if (!disk) return ours;
+	const merged = { ...disk };
+	for (const [key, value] of Object.entries(ours)) {
+		if (KEYED.includes(key) && isMap(value)) {
+			const before = isMap(start[key]) ? start[key] : {};
+			const next = { ...(isMap(disk[key]) ? disk[key] : {}) };
+			for (const id of Object.keys(before)) if (!(id in value)) delete next[id];
+			for (const [id, item] of Object.entries(value)) if (!(id in before) || !same(before[id], item)) next[id] = item;
+			merged[key] = next;
+		} else if (LISTS.includes(key) && Array.isArray(value)) {
+			const before = new Set(Array.isArray(start[key]) ? start[key] : []);
+			const added = value.filter((item) => !before.has(item));
+			merged[key] = [...new Set([...(Array.isArray(disk[key]) ? disk[key] : []), ...added])];
+		} else if (!same(start[key], value)) {
+			merged[key] = value;
+		}
+	}
+	for (const key of Object.keys(start)) if (!(key in ours)) delete merged[key];
+	return merged;
+}
+
+/**
+ * Saves a session this hook worked on without the lock: takes the lock once
+ * more for the short read-merge-write (so two such hooks cannot race each
+ * other), and merges its own changes into whatever another hook saved meanwhile.
+ */
+export async function saveSessionUnlocked(start, session, env) {
+	const file = sessionFile(session.sessionId, env);
+	const release = await acquireLock(file, { waitMs: SAVE_WAIT_MS });
+	try {
+		saveSession(mergeSessionChanges(start, session, readJsonSafe(file, null)), env);
+	} finally {
+		release();
+	}
 }
 
 /** Every other session seen in the last day (for worker-id collisions and `int claims`). */

@@ -12,7 +12,7 @@ import { gateCachePath, sessionsDir, relativeInside } from '../lib/paths.mjs';
 import { readJsonSafe, writeJson } from '../lib/jsonFile.mjs';
 import { acquireLock } from '../lib/lock.mjs';
 import { agentPid } from '../lib/processTree.mjs';
-import { loadSession, saveSession, loadOtherSessions, sessionExists, sessionFile } from './state.mjs';
+import { loadSession, saveSession, saveSessionUnlocked, loadOtherSessions, sessionExists, sessionFile } from './state.mjs';
 import { applyIntrosioResult, updateClaimsFromTranscript, isCompletionCall } from './features/claims.mjs';
 import { stopDecision } from './features/stopGuard.mjs';
 import { makeWorkerId, workerIdDecision } from './features/workerId.mjs';
@@ -80,6 +80,8 @@ export async function handleEvent(evt, deps = {}) {
 		const config = loadConfig(env);
 		const on = (feature) => featureOn(config, feature);
 		const session = loadSession(evt.sessionId, evt.agent, now, env);
+		// Without the lock (another hook held it too long), only this hook's own changes are saved.
+		const loaded = release.acquired === false ? structuredClone(session) : null;
 		session.lastSeenAt = now;
 		session.agent = evt.agent;
 		if (evt.cwd) session.cwd = evt.cwd;
@@ -194,7 +196,10 @@ export async function handleEvent(evt, deps = {}) {
 			default:
 		}
 		// A transcript offset is worth keeping even before any Introsio call: the next stop then reads only what is new.
-		if (existed || session.introsio || session.transcript) saveSession(session, env);
+		if (existed || session.introsio || session.transcript) {
+			if (loaded) await saveSessionUnlocked(loaded, session, env);
+			else saveSession(session, env);
+		}
 	} finally {
 		release();
 	}

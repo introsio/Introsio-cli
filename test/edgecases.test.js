@@ -6,6 +6,8 @@ import path from 'node:path';
 import { spawn, spawnSync } from 'node:child_process';
 import { scratch, makeRepo, git, fire, mcpResult, claimPacket, HOOK, KIT } from './helpers.js';
 import { runCommand } from '../lib/processTree.mjs';
+import { acquireLock } from '../lib/lock.mjs';
+import { mergeSessionChanges } from '../hook/state.mjs';
 import { workTreeKey } from '../hook/features/gates.mjs';
 import { createGit } from '../lib/git.mjs';
 import { scanDiff } from '../hook/features/git.mjs';
@@ -40,6 +42,47 @@ test('R1 hooks of parallel tool calls never lose a claim (session lock)', async 
 	const claims = JSON.parse(fs.readFileSync(path.join(home, 'sessions', 'p.json'), 'utf8')).claims;
 	assert.equal(Object.keys(claims).length, 17);
 	assert.equal(fs.readdirSync(path.join(home, 'sessions')).some((name) => name.endsWith('.lock')), false, 'lock released');
+});
+
+test('R1 a hook that cannot get the lock in time merges its change instead of overwriting the others\'', () => {
+	const start = { sessionId: 'p', claims: { a: { taskId: 'a' }, gone: { taskId: 'gone' } }, editedFiles: ['x.js'], lastSeenAt: 1 };
+	// This hook claimed b and released "gone"; meanwhile another hook saved a claim on c.
+	const ours = { sessionId: 'p', claims: { a: { taskId: 'a' }, b: { taskId: 'b' } }, editedFiles: ['x.js', 'y.js'], lastSeenAt: 3 };
+	const disk = { sessionId: 'p', claims: { a: { taskId: 'a', renewed: true }, gone: { taskId: 'gone' }, c: { taskId: 'c' } }, editedFiles: ['x.js', 'z.js'], lastSeenAt: 2 };
+	const merged = mergeSessionChanges(start, ours, disk);
+	assert.deepEqual(Object.keys(merged.claims).sort(), ['a', 'b', 'c']);
+	assert.equal(merged.claims.a.renewed, true, 'an entry this hook did not touch keeps the other hook\'s version');
+	assert.deepEqual(merged.editedFiles.sort(), ['x.js', 'y.js', 'z.js']);
+	assert.equal(merged.lastSeenAt, 3);
+	assert.equal(mergeSessionChanges(start, ours, null), ours, 'nothing on disk: our session as it is');
+});
+
+test('R1 a lock whose holder died is taken over; one just released (Windows lingers) is not broken early; a live holder\'s is kept', async () => {
+	const home = scratch();
+	const file = path.join(home, 'session.json');
+	const lock = `${file}.lock`;
+	const deadOwner = () => fs.writeFileSync(path.join(lock, 'owner.json'), JSON.stringify({ pid: 2 ** 22 + 4321, at: Date.now() })); // no such process
+	// Just written by a holder that has exited: could be a release Windows has not finished — not broken within the grace.
+	fs.mkdirSync(lock);
+	deadOwner();
+	const early = await acquireLock(file, { waitMs: 300 });
+	assert.equal(early.acquired, false, 'a dead owner\'s fresh lock is given its grace');
+	// The same lock seconds later: abandoned, taken over at once.
+	const old = new Date(Date.now() - 5000);
+	fs.utimesSync(lock, old, old);
+	const started = Date.now();
+	const release = await acquireLock(file, { waitMs: 3000 });
+	assert.equal(release.acquired, true);
+	assert.ok(Date.now() - started < 1000, 'no waiting on an abandoned lock');
+	assert.equal(fs.existsSync(`${lock}.break`), false, 'the takeover guard is gone');
+	// While we hold it, a second taker (live holder = us) waits and then goes on unlocked.
+	const second = await acquireLock(file, { waitMs: 300 });
+	assert.equal(second.acquired, false);
+	release();
+	assert.equal(fs.existsSync(`${file}.lock`), false, 'released');
+	const third = await acquireLock(file, { waitMs: 300 });
+	assert.equal(third.acquired, true);
+	third();
 });
 
 test('R2 a timed-out gate kills everything it started', async () => {

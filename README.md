@@ -173,7 +173,7 @@ as a regression test in `test/edgecases.test.js` (same numbers).
 
 | # | What broke | What the kit does now |
 |---|---|---|
-| R1 | Agents run the hooks of parallel tool calls at the same time; concurrent writes lost claims (10 of 12 kept) | Every session update runs under a per-session lock (`lib/lock.mjs`, stale locks taken over after 10 s, fail-open after 4 s) |
+| R1 | Agents run the hooks of parallel tool calls at the same time; concurrent writes lost claims (10 of 12 kept) | Every session update runs under a per-session lock (`lib/lock.mjs`): the holder's pid is in the lock; an abandoned lock (owner gone, after a 2 s grace — on Windows a released lock lingers while another process has it open) is taken over through a guard that re-checks it, a live holder's only after 60 s; release retries Windows' transient errors. A waiter goes on unlocked after 6 s and then saves only its own changes, merged into what is on disk (`mergeSessionChanges`, under the lock again). Atomic writes retry a rename Windows refuses while the file is open (`lib/jsonFile.mjs`) |
 | R2 | A timed-out test gate left its child processes (test workers) running | The gate runs in its own process group; on timeout, on exit, or if the agent kills the hook, the whole group is killed (`lib/processTree.mjs`) |
 | R3 | A diff over 16 MB made the gate cache blind to changes, so stale passes were reused | The cache key is the `git stash create` tree id plus every untracked file's size/mtime; an unreadable tree is never cached |
 | R4 | A bare `git push` from a branch whose upstream is main went through | A bare push is checked against `@{push}` (honours `push.default`) |
