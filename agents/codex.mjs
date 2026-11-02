@@ -1,5 +1,5 @@
 // Codex: MCP server in config.toml (a managed block), /prompts:introsio-execute, hooks in hooks.json.
-import { join, editJson, setMatcherHooks, removeMatcherHooks, hasOurHooks, hookCommand, markdownCommand, existsDir, existsFile, hasCli, SERVER_NAME, COMMAND_NAME } from './common.mjs';
+import { join, editJson, setMatcherHooks, removeMatcherHooks, hasOurHooks, hookCommand, markdownCommand, writeCommands, removeCommands, commandsStatus, existsDir, hasCli, SERVER_NAME, COMMAND_NAME } from './common.mjs';
 import { readJsonSafe, readText } from '../lib/jsonFile.mjs';
 import { withBlock, withoutBlock, hasBlock } from '../lib/managedBlock.mjs';
 
@@ -8,6 +8,7 @@ const paths = (ctx) => ({
 	config: join(base(ctx), 'config.toml'),
 	hooks: join(base(ctx), 'hooks.json'),
 	command: join(base(ctx), 'prompts', `${COMMAND_NAME}.md`),
+	commandFile: (name) => join(base(ctx), 'prompts', `${name}.md`),
 });
 
 function hookGroups(ctx) {
@@ -39,9 +40,9 @@ export default {
 			const body = `[mcp_servers.${SERVER_NAME}]\nurl = ${JSON.stringify(ctx.url)}`;
 			report.connect = writer.writeText(p.config, withBlock(text, body)) ? 'added' : 'already connected';
 		}
-		report.next.push(`Sign in: codex mcp login ${SERVER_NAME}. Then in Codex: /prompts:${COMMAND_NAME} <project>`);
+		report.next.push(`Sign in: codex mcp login ${SERVER_NAME}. Then in Codex: /prompts:${COMMAND_NAME} <project> (also /prompts:introsio-pause and /prompts:introsio-resume)`);
 		report.next.push('If your Codex version keeps hooks behind a flag, add to config.toml:  [features]  codex_hooks = true');
-		writer.writeText(p.command, markdownCommand(ctx, { frontmatter: { 'argument-hint': '<project name or id>' } }));
+		writeCommands(writer, p.commandFile, (command) => markdownCommand(ctx, { command, argumentHint: true }));
 		const hooks = editJson(writer, p.hooks, (config) => setMatcherHooks(config, hookGroups(ctx)));
 		if (hooks.manual || hooks.error) report.hooks = hooks.error ?? `manual — ${p.hooks} has comments`;
 		return report;
@@ -51,14 +52,14 @@ export default {
 		const text = readText(p.config);
 		if (text && hasBlock(text)) writer.writeText(p.config, withoutBlock(text));
 		editJson(writer, p.hooks, (config) => removeMatcherHooks(config));
-		writer.remove(p.command);
+		removeCommands(writer, p.commandFile);
 	},
 	status(ctx) {
 		const p = paths(ctx);
 		const text = readText(p.config) ?? '';
 		return {
 			connect: hasBlock(text) || userDefinedServer(text) ? 'yes' : 'no',
-			command: existsFile(p.command),
+			command: commandsStatus(p.commandFile),
 			hooks: hasOurHooks(readJsonSafe(p.hooks, {})) ? 'blocking' : 'not installed',
 		};
 	},

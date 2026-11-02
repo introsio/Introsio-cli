@@ -1,5 +1,5 @@
 // VS Code (GitHub Copilot agent mode): MCP in the user mcp.json and a /introsio-execute prompt file. No hooks.
-import { join, editJson, executeText, existsDir, existsFile, SERVER_NAME, COMMAND_NAME, DESCRIPTION } from './common.mjs';
+import { join, editJson, commandText, writeCommands, removeCommands, commandsStatus, existsDir, SERVER_NAME, COMMAND_NAME } from './common.mjs';
 import { readJsonSafe } from '../lib/jsonFile.mjs';
 
 function userDir(ctx) {
@@ -9,9 +9,11 @@ function userDir(ctx) {
 	return join(ctx.home, '.config', 'Code', 'User');
 }
 
-const paths = (ctx) => (ctx.scope === 'project'
-	? { mcp: join(ctx.root, '.vscode', 'mcp.json'), command: join(ctx.root, '.github', 'prompts', `${COMMAND_NAME}.prompt.md`) }
-	: { mcp: join(userDir(ctx), 'mcp.json'), command: join(userDir(ctx), 'prompts', `${COMMAND_NAME}.prompt.md`) });
+const paths = (ctx) => {
+	const prompts = ctx.scope === 'project' ? join(ctx.root, '.github', 'prompts') : join(userDir(ctx), 'prompts');
+	const commandFile = (name) => join(prompts, `${name}.prompt.md`);
+	return { mcp: ctx.scope === 'project' ? join(ctx.root, '.vscode', 'mcp.json') : join(userDir(ctx), 'mcp.json'), command: commandFile(COMMAND_NAME), commandFile };
+};
 
 export default {
 	id: 'vscode',
@@ -30,16 +32,16 @@ export default {
 		});
 		report.connect = mcp.error ?? (mcp.manual ? `manual — add "${SERVER_NAME}": { "type": "http", "url": "${ctx.url}" } under "servers" in ${p.mcp}` : mcp.changed ? 'added' : 'already connected');
 		report.next.push('In VS Code: open mcp.json and click Start above "introsio" to sign in. Then in Copilot Chat (Agent mode): /introsio-execute <project>');
-		writer.writeText(p.command, `---\nmode: agent\ndescription: ${DESCRIPTION}\n---\n\n${executeText(ctx, '${input:project:Project name or id}')}\n`);
+		writeCommands(writer, p.commandFile, (command) => `---\nmode: agent\ndescription: ${command.description}\n---\n\n${commandText(ctx, command, `\${input:args:${command.inputLabel}}`)}\n`);
 		return report;
 	},
 	uninstall(ctx, writer) {
 		const p = paths(ctx);
 		editJson(writer, p.mcp, (config) => (config.servers?.[SERVER_NAME] ? (delete config.servers[SERVER_NAME], true) : false));
-		writer.remove(p.command);
+		removeCommands(writer, p.commandFile);
 	},
 	status(ctx) {
 		const p = paths(ctx);
-		return { connect: readJsonSafe(p.mcp, {}).servers?.[SERVER_NAME] ? 'yes' : 'no', command: existsFile(p.command), hooks: 'none' };
+		return { connect: readJsonSafe(p.mcp, {}).servers?.[SERVER_NAME] ? 'yes' : 'no', command: commandsStatus(p.commandFile), hooks: 'none' };
 	},
 };

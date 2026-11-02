@@ -93,9 +93,16 @@ test('running setup twice adds everything once and keeps foreign config', () => 
 	assert.match(read(path.join(home, '.config', 'opencode', 'plugins', 'introsio.js')), /file:\/\/.*\.introsio\/kit\/hook\/engine\.mjs/);
 	assert.equal(json(path.join(vscodeUserDir(home), 'mcp.json')).servers.introsio.type, 'http');
 	assert.equal(json(path.join(home, '.codeium', 'windsurf', 'mcp_config.json')).mcpServers.introsio.serverUrl, 'https://api.introsio.app/mcp?toolset=developer');
-	for (const file of ['.claude/commands/introsio-execute.md', '.codex/prompts/introsio-execute.md', '.gemini/commands/introsio-execute.toml', '.cursor/commands/introsio-execute.md', '.config/opencode/commands/introsio-execute.md', path.relative(home, path.join(vscodeUserDir(home), 'prompts', 'introsio-execute.prompt.md'))]) {
-		assert.ok(fs.existsSync(path.join(home, file)), file);
+	for (const name of ['introsio-execute', 'introsio-pause', 'introsio-resume']) {
+		for (const file of [`.claude/commands/${name}.md`, `.codex/prompts/${name}.md`, `.gemini/commands/${name}.toml`, `.cursor/commands/${name}.md`, `.config/opencode/commands/${name}.md`, path.relative(home, path.join(vscodeUserDir(home), 'prompts', `${name}.prompt.md`))]) {
+			assert.ok(fs.existsSync(path.join(home, file)), file);
+		}
 	}
+	// Each command carries its own procedure and its own argument hint.
+	assert.match(read(path.join(home, '.claude', 'commands', 'introsio-pause.md')), /argument-hint: \[--release\][\s\S]*pauseTask \{ taskId, workerId/);
+	assert.match(read(path.join(home, '.claude', 'commands', 'introsio-resume.md')), /claimTask \{ taskId, workerId, resume: true \}/);
+	assert.match(read(path.join(home, '.gemini', 'commands', 'introsio-resume.toml')), /What to resume: \{\{args\}\}/);
+	assert.match(read(path.join(vscodeUserDir(home), 'prompts', 'introsio-pause.prompt.md')), /\$\{input:args:/);
 });
 
 // OpenCode runs plugins on Bun, which accepts ES modules in a bare .js file. Node 18
@@ -160,7 +167,10 @@ test('uninstall removes only what setup added', () => {
 	assert.match(read(path.join(home, '.codex', 'config.toml')), /\[mcp_servers\.other\]/);
 	assert.deepEqual(json(path.join(home, '.gemini', 'settings.json')), before.gemini);
 	assert.deepEqual(json(path.join(home, '.cursor', 'hooks.json')), before.cursor);
-	assert.equal(fs.existsSync(path.join(home, '.claude', 'commands', 'introsio-execute.md')), false);
+	for (const name of ['introsio-execute', 'introsio-pause', 'introsio-resume']) {
+		assert.equal(fs.existsSync(path.join(home, '.claude', 'commands', `${name}.md`)), false, name);
+		assert.equal(fs.existsSync(path.join(home, '.codex', 'prompts', `${name}.md`)), false, name);
+	}
 	assert.equal(fs.existsSync(path.join(home, '.config', 'opencode', 'plugins', 'introsio.js')), false);
 	assert.equal(fs.existsSync(path.join(home, '.introsio', 'kit')), false);
 });

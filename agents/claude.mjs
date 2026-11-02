@@ -1,10 +1,17 @@
 // Claude Code: MCP via `claude mcp add` (or ~/.claude.json / .mcp.json), /introsio-execute as a command, hooks in settings.json.
-import { join, editJson, setMatcherHooks, removeMatcherHooks, hasOurHooks, hookCommand, markdownCommand, existsDir, existsFile, hasCli, SERVER_NAME, COMMAND_NAME } from './common.mjs';
+import { join, editJson, setMatcherHooks, removeMatcherHooks, hasOurHooks, hookCommand, markdownCommand, writeCommands, removeCommands, commandsStatus, existsDir, hasCli, SERVER_NAME, COMMAND_NAME } from './common.mjs';
 import { readJsonSafe } from '../lib/jsonFile.mjs';
 
-const paths = (ctx) => (ctx.scope === 'project'
-	? { settings: join(ctx.root, '.claude', 'settings.json'), mcp: join(ctx.root, '.mcp.json'), command: join(ctx.root, '.claude', 'commands', `${COMMAND_NAME}.md`) }
-	: { settings: join(ctx.home, '.claude', 'settings.json'), mcp: join(ctx.home, '.claude.json'), command: join(ctx.home, '.claude', 'commands', `${COMMAND_NAME}.md`) });
+const paths = (ctx) => {
+	const base = ctx.scope === 'project' ? ctx.root : ctx.home;
+	const commandFile = (name) => join(base, '.claude', 'commands', `${name}.md`);
+	return {
+		settings: join(base, '.claude', 'settings.json'),
+		mcp: ctx.scope === 'project' ? join(ctx.root, '.mcp.json') : join(ctx.home, '.claude.json'),
+		command: commandFile(COMMAND_NAME),
+		commandFile,
+	};
+};
 
 function hookGroups(ctx) {
 	const cmd = (event, timeout) => ({ type: 'command', command: hookCommand(ctx, 'claude', event), timeout });
@@ -47,8 +54,8 @@ export default {
 			});
 			report.connect = result.error ?? (result.manual ? `manual — add "${SERVER_NAME}": { "type": "http", "url": "${ctx.url}" } to mcpServers in ${p.mcp}` : result.changed ? 'added' : 'already connected');
 		}
-		report.next.push('In Claude Code run /mcp, pick "introsio" and sign in. Then: /introsio-execute <project>');
-		writer.writeText(p.command, markdownCommand(ctx, { frontmatter: { 'argument-hint': '<project name or id>' } }));
+		report.next.push('In Claude Code run /mcp, pick "introsio" and sign in. Then: /introsio-execute <project> — /introsio-pause before you stop, /introsio-resume to continue');
+		writeCommands(writer, p.commandFile, (command) => markdownCommand(ctx, { command, argumentHint: true }));
 		const hooks = editJson(writer, p.settings, (settings) => setMatcherHooks(settings, hookGroups(ctx)));
 		if (hooks.manual || hooks.error) report.hooks = hooks.error ?? `manual — ${p.settings} has comments; add the hooks shown by \`int setup --print claude\``;
 		return report;
@@ -58,14 +65,14 @@ export default {
 		if (ctx.scope === 'user' && hasCli('claude', ctx.env)) writer.run('claude', ['mcp', 'remove', '--scope', 'user', SERVER_NAME]);
 		else editJson(writer, p.mcp, (config) => (config.mcpServers?.[SERVER_NAME] ? (delete config.mcpServers[SERVER_NAME], true) : false));
 		editJson(writer, p.settings, (settings) => removeMatcherHooks(settings));
-		writer.remove(p.command);
+		removeCommands(writer, p.commandFile);
 	},
 	status(ctx) {
 		const p = paths(ctx);
 		const mcp = readJsonSafe(p.mcp, {});
 		return {
 			connect: mcp.mcpServers?.[SERVER_NAME] ? 'yes' : (ctx.scope === 'user' ? 'see `claude mcp list`' : 'no'),
-			command: existsFile(p.command),
+			command: commandsStatus(p.commandFile),
 			hooks: hasOurHooks(readJsonSafe(p.settings, {})) ? 'blocking' : 'not installed',
 		};
 	},

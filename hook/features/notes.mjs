@@ -60,6 +60,8 @@ export function recoveryNote(session) {
 		].filter(Boolean);
 		lines.push(`You hold "${claim.title}" (taskId ${claim.taskId}${claim.projectId ? `, project ${claim.projectId}` : ''})${parts.length ? ` — ${parts.join(', ')}` : ''}. Continue it (getReadySubtasks shows the next step), then completeTask with outcome.`);
 	}
+	const paused = Object.entries(session.paused ?? {});
+	if (paused.length) lines.push(`You paused: ${paused.map(([id, item]) => `"${item.title}" (taskId ${id})`).join(', ')} — /introsio-resume takes them back after checking the repository.`);
 	if (claims.length === 0) lines.push('You hold no task. claimTask { projectId, workerId } takes the next one.');
 	return lines.join('\n');
 }

@@ -16,10 +16,11 @@ import { loadSession, saveSession, loadOtherSessions, sessionExists, sessionFile
 import { applyIntrosioResult, updateClaimsFromTranscript, isCompletionCall } from './features/claims.mjs';
 import { stopDecision } from './features/stopGuard.mjs';
 import { makeWorkerId, workerIdDecision } from './features/workerId.mjs';
-import { shippedDecision, planTestGate, runTestGate, resolveMode } from './features/gates.mjs';
+import { shippedDecision, planTestGate, runTestGate, resolveMode, workTreeKey } from './features/gates.mjs';
 import { pushDecision, secretsDecision } from './features/git.mjs';
 import { scopeNote, leaseNote, recoveryNote, rereadDecision } from './features/notes.mjs';
 import { logRow, writeLog } from './features/log.mjs';
+import { pauseDecision, recordPause, forgetPause, pauseInAnswer, resumeReport, formatReport, readLocalPause, interruptedNote } from './features/pause.mjs';
 
 const NONE = Object.freeze({ type: 'none' });
 const GIT_WRITE = /\bgit\b[^\n]*\b(push|commit)\b/;
@@ -114,6 +115,7 @@ export async function handleEvent(evt, deps = {}) {
 					answer = firstDeny(
 						() => (on('worker-id') ? workerIdDecision(session, loadOtherSessions(session.sessionId, now, env), tool, now, deps.isAlive) : NONE),
 						() => (on('reread') ? rereadDecision(session, tool) : NONE),
+						() => (tool.name === 'pauseTask' && on('pause') ? pauseDecision({ git: git(), args: tool.args, session, now, budgetMs: deps.snapshotBudgetMs }) : NONE),
 						() => (completing && on('shipped-gate') ? shippedDecision({ git: git(), settings: settingsHere(), claim, args: tool.args, session }) : NONE),
 					);
 					if (answer.type !== 'deny' && completing && on('test-gate')) {
@@ -147,7 +149,9 @@ export async function handleEvent(evt, deps = {}) {
 				if (tool.kind === 'introsio') {
 					session.sawIntrosioResult = true;
 					const hadClaims = Object.keys(session.claims).length;
+					const pausedClaim = tool.name === 'pauseTask' ? session.claims[String(tool.args?.taskId ?? '')] : null;
 					applyIntrosioResult(session, { name: tool.name, args: tool.args, result: evt.result }, now);
+					if (on('pause')) notes.push(...pauseNotes({ tool, result: evt.result, session, pausedClaim, git, config, env, now, deps }));
 					if (on('log')) writeLog(logRow(session, evt, { name: tool.name, args: tool.args, result: evt.result }, now), env);
 					if (tool.name === 'claimTask' && Object.keys(session.claims).length > hadClaims && !session.modeNoted && on('shipped-gate')) {
 						const claim = Object.values(session.claims).at(-1);
@@ -199,6 +203,70 @@ export async function handleEvent(evt, deps = {}) {
 		return runTestGate(gatePlan, { claim: gateClaim, cache: gateCache(env), runGate: deps.runGate, now: deps.now ?? Date.now() });
 	}
 	return answer;
+}
+
+/**
+ * Feature `pause`, after an Introsio answer: keep the snapshot of a pause that
+ * landed, drop it once the task is done, check the repository against any pause
+ * an answer carries, and say so when a task was left by a session that died.
+ */
+function pauseNotes({ tool, result, session, pausedClaim, git, config, env, now, deps }) {
+	const data = result?.data;
+	const notes = [];
+	const root = () => git().root();
+	const gatePassed = () => {
+		const settings = repoSettings(config, root());
+		if (!settings.gate) return null;
+		const key = workTreeKey(git(), settings.gate);
+		return !!key && readJsonSafe(gateCachePath(env), {})[root()]?.key === key;
+	};
+	if (tool.name === 'pauseTask' && result?.ok && data?.success !== false) {
+		if (pausedClaim) session.claims[String(tool.args?.taskId)] = pausedClaim; // recordPause reads the title / files once more
+		const record = recordPause({ git: root() ? git() : null, session, args: tool.args, data, now, env, gatePassed: root() ? gatePassed() : null });
+		delete session.claims[String(tool.args?.taskId)];
+		if (record) {
+			notes.push(`Introsio: paused "${record.title}".${record.snapshot ? ` The working tree is saved as ${record.ref} (local only, never pushed; your files are untouched).` : record.snapshotError ? ` No snapshot of the working tree (${record.snapshotError}) — resume will compare file lists only.` : ''}` +
+				` Resume later with /introsio-resume ${record.taskId}.`);
+		}
+		return notes;
+	}
+	if (tool.name === 'completeTask' && result?.ok && data?.task?.completed !== false && tool.args?.taskId) {
+		forgetPause({ git: root() ? git() : null, taskId: String(tool.args.taskId), env });
+		if (session.paused) delete session.paused[String(tool.args.taskId)];
+		return notes;
+	}
+	const found = result?.ok ? pauseInAnswer(tool.name, data) : null;
+	if (found?.resumed && session.paused) delete session.paused[found.taskId];
+	if (found) {
+		const key = `${found.taskId}:${found.pause?.at ?? ''}:${found.resumed ? 'r' : 'p'}`;
+		session.resumeChecked = session.resumeChecked ?? {};
+		if (session.resumeChecked[key]) return notes;
+		session.resumeChecked[key] = now;
+		const report = resumeReport({
+			git: root() ? git() : null,
+			taskId: found.taskId,
+			pause: found.pause,
+			local: readLocalPause(found.taskId, env),
+			others: loadOtherSessions(session.sessionId, now, env),
+			now,
+			alive: deps.isAlive,
+			taskChanged: found.changed === true,
+			gatePassedNow: root() ? gatePassed() : null,
+		});
+		const title = data.title ?? data.name ?? data.task?.title ?? found.taskId;
+		notes.push(formatReport(title, report, { resumed: found.resumed }));
+		return notes;
+	}
+	// Interrupted without a pause: the task is held by a session on this computer whose agent died.
+	const taskId = String(tool.args?.taskId ?? data?.id ?? '');
+	const claimWorkerId = tool.name === 'getTaskById' && result?.ok
+		? data?.claim?.workerId
+		: (!result?.ok && Number(data?.status) === 409 ? (data?.claimedBy?.workerId ?? data?.details?.claimedBy?.workerId) : null);
+	if (taskId && claimWorkerId && claimWorkerId !== session.workerId) {
+		const note = interruptedNote({ taskId, claimWorkerId, others: loadOtherSessions(session.sessionId, now, env), now, alive: deps.isAlive });
+		if (note) notes.push(note);
+	}
+	return notes;
 }
 
 function readSmallFile(file) {

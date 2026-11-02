@@ -7,7 +7,7 @@ import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { AGENTS, agentById } from './agents/index.mjs';
-import { Writer, nodePathOf } from './agents/common.mjs';
+import { Writer, nodePathOf, COMMANDS, commandText } from './agents/common.mjs';
 import { FEATURES, MODES, loadConfig, saveConfig, repoSettings, updateRepo, featureOn } from './lib/config.mjs';
 import { MAX_GATE_TIMEOUT_SEC } from './hook/features/gates.mjs';
 import { createGit } from './lib/git.mjs';
@@ -16,6 +16,8 @@ import { readText } from './lib/jsonFile.mjs';
 import { loadOtherSessions, clearSessions } from './hook/state.mjs';
 import { summarize } from './hook/features/log.mjs';
 import { runGateCommand } from './hook/features/gates.mjs';
+import { listLocalPauses, removeLocalPause } from './hook/features/pause.mjs';
+import { sessionIsLive } from './hook/features/workerId.mjs';
 
 const KIT_SOURCE = path.dirname(fileURLToPath(import.meta.url));
 const DEFAULT_URL = 'https://api.introsio.app/mcp?toolset=developer';
@@ -63,6 +65,7 @@ function context(flags, env = process.env) {
 		hookScript: path.join(kitInstallDir, 'hook', 'introsio-hook.mjs'),
 		nodePath: process.execPath,
 		executeTemplate: readText(path.join(KIT_SOURCE, 'templates', 'execute.md')),
+		templates: Object.fromEntries(COMMANDS.map((command) => [command.name, readText(path.join(KIT_SOURCE, 'templates', command.template)) ?? ''])),
 	};
 }
 
@@ -125,7 +128,7 @@ function setup(flags) {
 			const report = agent.install(ctx, writer);
 			out(`● ${agent.label}`);
 			out(`    connect:  ${report.connect}`);
-			if (report.command) out(`    command:  /introsio-execute → ${report.command}`);
+			if (report.command) out(`    commands: /introsio-execute, /introsio-pause, /introsio-resume → ${path.dirname(report.command)}`);
 			out(`    hooks:    ${report.hooks}`);
 			for (const line of report.next) next.push(`${agent.label}: ${line}`);
 		} catch (error) {
@@ -180,7 +183,7 @@ function status(flags) {
 	for (const agent of AGENTS) {
 		if (!agent.detect(ctx)) continue;
 		const s = agent.status(ctx);
-		out(`● ${agent.label.padEnd(18)} connect: ${s.connect.padEnd(4)}  /introsio-execute: ${String(s.command).padEnd(4)}  hooks: ${s.hooks}`);
+		out(`● ${agent.label.padEnd(18)} connect: ${s.connect.padEnd(4)}  commands: ${String(s.command).padEnd(4)}  hooks: ${s.hooks}`);
 	}
 	const config = loadConfig(undefined, { strict: true });
 	out('');
@@ -271,6 +274,59 @@ function claims(positional) {
 		for (const claim of Object.values(session.claims)) {
 			const lease = claim.expiresAt ? (claim.expiresAt > now ? `lease ${Math.round((claim.expiresAt - now) / 60000)} min left` : 'lease expired') : '';
 			out(`  - "${claim.title}" taskId ${claim.taskId} ${lease}`);
+		}
+	}
+}
+
+/**
+ * `int paused`: the pauses made on this computer, and tasks a session that is no
+ * longer running still holds (interrupted without a pause). Reads only local
+ * files and git — it works after the agent is gone, with no Introsio sign-in.
+ * `--prune` drops the records (and snapshot refs) of pauses older than --days (default 30).
+ */
+function paused(flags) {
+	const now = Date.now();
+	const pauses = listLocalPauses().sort((a, b) => Date.parse(b.at) - Date.parse(a.at));
+	if (flags.prune) {
+		const days = flags.days !== undefined && Number(flags.days) >= 0 ? Number(flags.days) : 30;
+		let pruned = 0;
+		for (const pause of pauses) {
+			if (now - Date.parse(pause.at) < days * 86_400_000) continue;
+			if (pause.ref && pause.root) createGit(pause.root).deleteRef(pause.ref);
+			removeLocalPause(pause.taskId);
+			pruned += 1;
+		}
+		out(`Removed ${pruned} pause record(s) older than ${days} days (and their snapshot refs). Nothing changed in Introsio.`);
+		return;
+	}
+	const interrupted = loadOtherSessions('', now)
+		.filter((session) => Object.keys(session.claims ?? {}).length && !sessionIsLive(session, now));
+	if (pauses.length === 0 && interrupted.length === 0) {
+		out('Nothing paused or interrupted on this computer.');
+		return;
+	}
+	const ago = (iso) => {
+		const minutes = Math.round((now - Date.parse(iso)) / 60_000);
+		return minutes < 90 ? `${minutes} min ago` : minutes < 2880 ? `${Math.round(minutes / 60)} h ago` : `${Math.round(minutes / 1440)} days ago`;
+	};
+	if (pauses.length) {
+		out('Paused:');
+		for (const pause of pauses) {
+			const snapshot = pause.ref && pause.root && createGit(pause.root).resolve(pause.ref) ? 'working tree saved' : (pause.dirtyFiles?.length ? 'no snapshot' : 'clean tree');
+			out(`  - "${pause.title}" (taskId ${pause.taskId}) ${ago(pause.at)} by ${pause.agent ?? 'agent'}${pause.release ? ', released' : ''}`);
+			if (pause.root) out(`      ${pause.root} · ${pause.branch ?? 'detached HEAD'} @ ${String(pause.head ?? '?').slice(0, 10)} · ${pause.dirtyFiles?.length ?? 0} unfinished file(s), ${snapshot}`);
+			if (pause.note) out(`      ${pause.note.replace(/\s+/g, ' ').slice(0, 160)}`);
+			out(`      resume: /introsio-resume ${pause.taskId}`);
+		}
+	}
+	if (interrupted.length) {
+		if (pauses.length) out('');
+		out('Interrupted without a pause (the agent session is gone, its claim is still open):');
+		for (const session of interrupted) {
+			for (const claim of Object.values(session.claims)) {
+				out(`  - "${claim.title}" (taskId ${claim.taskId}) — ${session.agent} session, workerId ${claim.workerId ?? session.workerId ?? '?'}${session.cwd ? `, in ${session.cwd}` : ''}`);
+				out(`      resume: /introsio-resume ${claim.taskId}  (it takes the task over with workerId ${claim.workerId ?? session.workerId ?? '?'})`);
+			}
 		}
 	}
 }
@@ -408,9 +464,12 @@ function help() {
   int features | enable <name> | disable <name>
   int claims | claims clear        tasks your agents hold on this computer
   int stats [--since 7d] [--project <id>] [--json]
-  int print-execute                the /introsio-execute procedure, to paste where an agent has no commands
+  int paused [--prune [--days 30]] work paused or interrupted on this computer, and how to resume it
+  int print-execute | print-pause | print-resume
+                                   a command's procedure, to paste where an agent has no commands
 
-  Inside an agent: /introsio-execute <project>      One session without hooks: INTROSIO_HOOKS=off`);
+  Inside an agent: /introsio-execute <project> · /introsio-pause [--release] · /introsio-resume [task]
+  One session without hooks: INTROSIO_HOOKS=off`);
 }
 
 async function main() {
@@ -436,7 +495,11 @@ async function run(command, positional, flags) {
 			case 'enable': case 'disable': return features(positional);
 			case 'claims': return claims(positional);
 			case 'stats': return stats(flags);
-			case 'print-execute': return out(context(flags).executeTemplate.replaceAll('$ARGUMENTS', 'the project the user names'));
+			case 'paused': return paused(flags);
+			case 'print-execute': case 'print-pause': case 'print-resume': {
+				const chosen = COMMANDS.find((item) => item.name === `introsio-${command.slice('print-'.length)}`);
+				return out(commandText(context(flags), chosen, chosen.name === 'introsio-execute' ? 'the project the user names' : 'what the user names'));
+			}
 			case 'hook': {
 				// `int hook <agent> <event>` — the same entry as introsio-hook.mjs, for package-manager installs.
 				process.argv = [process.argv[0], path.join(KIT_SOURCE, 'hook', 'introsio-hook.mjs'), ...positional.slice(1)];

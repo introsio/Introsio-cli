@@ -5,7 +5,7 @@
 
 /** Every Introsio MCP tool whose name alone identifies it, even under another server name. */
 export const DISTINCTIVE_TOOLS = new Set([
-	'claimTask', 'completeTask', 'undoTaskCompletion', 'updateSubtask', 'getReadySubtasks', 'getReadyTasks',
+	'claimTask', 'pauseTask', 'completeTask', 'undoTaskCompletion', 'updateSubtask', 'getReadySubtasks', 'getReadyTasks',
 	'getExecutionWaves', 'getProjectPlan', 'createProjectPlan', 'getProjectState', 'updateProjectState',
 	'getProjectContext', 'updateProjectContext', 'editProjectContextItems', 'recordProjectDecision',
 	'exportProjectBlueprint', 'importProjectBlueprint', 'getTaskDependencies', 'addTaskDependency', 'removeTaskDependency',

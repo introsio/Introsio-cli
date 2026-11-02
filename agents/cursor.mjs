@@ -1,9 +1,14 @@
 // Cursor: MCP in mcp.json, /introsio-execute in commands/, hooks in hooks.json (version 1 format).
-import { join, editJson, hookCommand, markdownCommand, existsDir, existsFile, SERVER_NAME, COMMAND_NAME, HOOK_MARK } from './common.mjs';
+import { join, editJson, hookCommand, markdownCommand, writeCommands, removeCommands, commandsStatus, existsDir, SERVER_NAME, COMMAND_NAME, HOOK_MARK } from './common.mjs';
 import { readJsonSafe } from '../lib/jsonFile.mjs';
 
 const base = (ctx) => (ctx.scope === 'project' ? join(ctx.root, '.cursor') : join(ctx.home, '.cursor'));
-const paths = (ctx) => ({ mcp: join(base(ctx), 'mcp.json'), hooks: join(base(ctx), 'hooks.json'), command: join(base(ctx), 'commands', `${COMMAND_NAME}.md`) });
+const paths = (ctx) => ({
+	mcp: join(base(ctx), 'mcp.json'),
+	hooks: join(base(ctx), 'hooks.json'),
+	command: join(base(ctx), 'commands', `${COMMAND_NAME}.md`),
+	commandFile: (name) => join(base(ctx), 'commands', `${name}.md`),
+});
 
 const EVENTS = ['beforeMCPExecution', 'afterMCPExecution', 'beforeShellExecution', 'afterFileEdit', 'stop'];
 
@@ -36,7 +41,7 @@ export default {
 		});
 		report.connect = mcp.error ?? (mcp.manual ? `manual — add "${SERVER_NAME}": { "url": "${ctx.url}" } to ${p.mcp}` : mcp.changed ? 'added' : 'already connected');
 		report.next.push('In Cursor: Settings → MCP → introsio → Connect (sign in). Then in Agent chat: /introsio-execute <project>');
-		writer.writeText(p.command, markdownCommand(ctx, { argumentToken: 'the project named after the command' }));
+		writeCommands(writer, p.commandFile, (command) => markdownCommand(ctx, { command, argumentToken: 'what the user wrote after the command' }));
 		const hooks = editJson(writer, p.hooks, (config) => {
 			config.version = config.version ?? 1;
 			config.hooks = config.hooks ?? {};
@@ -51,12 +56,12 @@ export default {
 		const p = paths(ctx);
 		editJson(writer, p.mcp, (config) => (config.mcpServers?.[SERVER_NAME] ? (delete config.mcpServers[SERVER_NAME], true) : false));
 		editJson(writer, p.hooks, (config) => removeOurs(config));
-		writer.remove(p.command);
+		removeCommands(writer, p.commandFile);
 	},
 	status(ctx) {
 		const p = paths(ctx);
 		const hooks = JSON.stringify(readJsonSafe(p.hooks, {}));
-		return { connect: readJsonSafe(p.mcp, {}).mcpServers?.[SERVER_NAME] ? 'yes' : 'no', command: existsFile(p.command), hooks: hooks.includes(HOOK_MARK) ? 'blocking' : 'not installed' };
+		return { connect: readJsonSafe(p.mcp, {}).mcpServers?.[SERVER_NAME] ? 'yes' : 'no', command: commandsStatus(p.commandFile), hooks: hooks.includes(HOOK_MARK) ? 'blocking' : 'not installed' };
 	},
 	print: (ctx) => ({ version: 1, hooks: Object.fromEntries(EVENTS.map((event) => [event, [{ command: hookCommand(ctx, 'cursor', event) }]])) }),
 };
