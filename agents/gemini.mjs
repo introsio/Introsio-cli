@@ -1,9 +1,13 @@
 // Gemini CLI: MCP + hooks in settings.json, /introsio-execute as a TOML command.
-import { join, editJson, setMatcherHooks, removeMatcherHooks, hasOurHooks, hookCommand, executeText, existsDir, existsFile, hasCli, SERVER_NAME, COMMAND_NAME, DESCRIPTION } from './common.mjs';
+import { join, editJson, setMatcherHooks, removeMatcherHooks, hasOurHooks, hookCommand, commandText, writeCommands, removeCommands, commandsStatus, existsDir, hasCli, SERVER_NAME, COMMAND_NAME } from './common.mjs';
 import { readJsonSafe } from '../lib/jsonFile.mjs';
 
 const base = (ctx) => (ctx.scope === 'project' ? join(ctx.root, '.gemini') : join(ctx.home, '.gemini'));
-const paths = (ctx) => ({ settings: join(base(ctx), 'settings.json'), command: join(base(ctx), 'commands', `${COMMAND_NAME}.toml`) });
+const paths = (ctx) => ({
+	settings: join(base(ctx), 'settings.json'),
+	command: join(base(ctx), 'commands', `${COMMAND_NAME}.toml`),
+	commandFile: (name) => join(base(ctx), 'commands', `${name}.toml`),
+});
 
 function hookGroups(ctx) {
 	// Gemini timeouts are milliseconds.
@@ -38,7 +42,7 @@ export default {
 		report.connect = result.error ?? (result.manual ? `manual — ${p.settings} has comments; add mcpServers.${SERVER_NAME} = { "httpUrl": "${ctx.url}" }` : 'added');
 		if (result.manual || result.error) report.hooks = 'manual';
 		report.next.push(`In Gemini CLI run /mcp auth ${SERVER_NAME} to sign in. Then: /${COMMAND_NAME} <project>`);
-		writer.writeText(p.command, `description = ${JSON.stringify(DESCRIPTION)}\nprompt = ${tomlString(executeText(ctx, '{{args}}'))}\n`);
+		writeCommands(writer, p.commandFile, (command) => `description = ${JSON.stringify(command.description)}\nprompt = ${tomlString(commandText(ctx, command, '{{args}}'))}\n`);
 		return report;
 	},
 	uninstall(ctx, writer) {
@@ -48,12 +52,12 @@ export default {
 			if (had) delete settings.mcpServers[SERVER_NAME];
 			return removeMatcherHooks(settings) || had;
 		});
-		writer.remove(p.command);
+		removeCommands(writer, p.commandFile);
 	},
 	status(ctx) {
 		const p = paths(ctx);
 		const settings = readJsonSafe(p.settings, {});
-		return { connect: settings.mcpServers?.[SERVER_NAME] ? 'yes' : 'no', command: existsFile(p.command), hooks: hasOurHooks(settings) ? 'blocking' : 'not installed' };
+		return { connect: settings.mcpServers?.[SERVER_NAME] ? 'yes' : 'no', command: commandsStatus(p.commandFile), hooks: hasOurHooks(settings) ? 'blocking' : 'not installed' };
 	},
 	print: (ctx) => ({ hooks: hookGroups(ctx) }),
 };

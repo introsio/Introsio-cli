@@ -41,7 +41,7 @@ const RELEASING_STATES = new Set(['blocked', 'pending']);
 /** The code the server answers when a project reset revoked this worker's claim (agentExecutionService). */
 const REVOKED_BY_RESET = 'CLAIM_REVOKED_BY_RESET';
 
-const TASK_TOOLS = new Set(['completeTask', 'updateTask', 'updateSubtask', 'undoTaskCompletion', 'claimTask', 'getTaskById']);
+const TASK_TOOLS = new Set(['completeTask', 'updateTask', 'updateSubtask', 'undoTaskCompletion', 'claimTask', 'getTaskById', 'pauseTask']);
 
 /**
  * A refusal that proves this session no longer holds the task: the task is gone
@@ -143,6 +143,11 @@ export function applyIntrosioResult(session, { name, args = {}, result }, now) {
 				if (expiresAt) claim.expiresAt = expiresAt;
 				if (args.outcome?.branch) claim.branch = args.outcome.branch;
 			}
+			return;
+		}
+		case 'pauseTask': {
+			// Paused (ADR-0011): the task waits for a resume, so this session no longer holds it.
+			delete session.claims[String(args.taskId ?? data.task?.id ?? '')];
 			return;
 		}
 		case 'updateSubtask': {

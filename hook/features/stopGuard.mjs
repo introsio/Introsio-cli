@@ -33,7 +33,8 @@ export function stopDecision(session, evt, now) {
 		message:
 			`Introsio: you still hold ${open.length} claimed task(s) that are not completed:\n${open.map(describe).join('\n')}\n` +
 			'Before you stop, settle each one — and follow what the user asked, not this reminder:\n' +
-			'- the user only wanted it claimed, or asked you to stop or pause: release it with updateTask { taskId, workerId, statusState: "pending" } (it goes back to the queue) — do not do the work;\n' +
+			'- you are out of usage, context or time, or the user asked to pause: pause it with pauseTask (the /introsio-pause procedure: a note, nextSteps, the subtask and git) — it waits for /introsio-resume;\n' +
+			'- the user only wanted it claimed: release it with updateTask { taskId, workerId, statusState: "pending" } (it goes back to the queue) — do not do the work;\n' +
 			'- the work is done: completeTask { taskId, workerId, outcome: { summary: what you produced, verification: how you checked it, files } };\n' +
 			'- you cannot finish it: updateTask { taskId, workerId, statusState: "blocked" } and tell the user why;\n' +
 			'- the user wants to keep it claimed for themselves: just stop again — you will not be asked twice.',

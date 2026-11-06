@@ -3,9 +3,52 @@
   "version": "0.2.0",
   "description": "Connect any coding agent to Introsio, run a Developer Mode project with /introsio-execute, and keep Introsio updated with hooks.",
   "type": "module",
-  "bin": { "int": "cli.mjs" },
-  "engines": { "node": ">=18" },
-  "files": ["cli.mjs", "lib", "hook", "agents", "opencode", "templates", "README.md"],
-  "scripts": { "test": "node test/run.js" },
-  "license": "UNLICENSED"
+  "bin": {
+    "int": "cli.mjs",
+    "introsio": "cli.mjs"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "files": [
+    "cli.mjs",
+    "lib",
+    "hook",
+    "agents",
+    "opencode",
+    "templates",
+    "README.md",
+    "LICENSE",
+    "CHANGELOG.md"
+  ],
+  "scripts": {
+    "test": "node test/run.js",
+    "prepublishOnly": "node test/run.js"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/introsio/Introsio-cli.git"
+  },
+  "homepage": "https://github.com/introsio/Introsio-cli#readme",
+  "bugs": {
+    "url": "https://github.com/introsio/Introsio-cli/issues"
+  },
+  "keywords": [
+    "claude-code",
+    "cli",
+    "codex",
+    "coding-agent",
+    "cursor",
+    "gemini-cli",
+    "hooks",
+    "introsio",
+    "mcp",
+    "model-context-protocol",
+    "opencode"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "license": "MIT",
+  "author": "Mahesh Rasapalli"
 }

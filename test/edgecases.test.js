@@ -6,11 +6,15 @@ import path from 'node:path';
 import { spawn, spawnSync } from 'node:child_process';
 import { scratch, makeRepo, git, fire, mcpResult, claimPacket, HOOK, KIT } from './helpers.js';
 import { runCommand } from '../lib/processTree.mjs';
+import { acquireLock } from '../lib/lock.mjs';
+import { mergeSessionChanges } from '../hook/state.mjs';
 import { workTreeKey } from '../hook/features/gates.mjs';
 import { createGit } from '../lib/git.mjs';
 import { scanDiff } from '../hook/features/git.mjs';
 import { hookCommand } from '../agents/common.mjs';
 import { capMessage } from '../hook/respond.mjs';
+import { repoKey, relativeInside } from '../lib/paths.mjs';
+import { loadConfig, saveConfig, repoSettings, updateRepo } from '../lib/config.mjs';
 
 const tests = [];
 const test = (name, fn) => tests.push({ name, fn });
@@ -18,7 +22,14 @@ const claim = (home, sid, cwd = home, packet = claimPacket(), agent = 'claude') 
 	session_id: sid, cwd, tool_name: 'mcp__introsio__claimTask', tool_input: { projectId: 'proj-1' }, tool_response: mcpResult(packet),
 });
 const stop = (home, sid, extra = {}) => fire(home, 'claude', 'Stop', { session_id: sid, cwd: home, ...extra }).json;
-const isAliveCheck = (pid) => { try { process.kill(pid, 0); return true; } catch { return false; } };
+const isAliveCheck = (pid) => {
+	try { process.kill(pid, 0); } catch { return false; }
+	// A killed process whose parent is gone stays a zombie until init reaps it (containers often never do): dead.
+	if (process.platform === 'linux') {
+		try { return fs.readFileSync(`/proc/${pid}/stat`, 'utf8').split(') ')[1]?.[0] !== 'Z'; } catch { return false; }
+	}
+	return true;
+};
 
 test('R1 hooks of parallel tool calls never lose a claim (session lock)', async () => {
 	const home = scratch();
@@ -33,16 +44,61 @@ test('R1 hooks of parallel tool calls never lose a claim (session lock)', async 
 	assert.equal(fs.readdirSync(path.join(home, 'sessions')).some((name) => name.endsWith('.lock')), false, 'lock released');
 });
 
-test('R2 a timed-out gate kills everything it started', async () => {
-	// A unique duration makes the processes findable: `sleep 41.<n>`.
-	const marker = `sleep 41.${process.pid % 997}${Date.now() % 1000}`;
+test('R1 a hook that cannot get the lock in time merges its change instead of overwriting the others\'', () => {
+	const start = { sessionId: 'p', claims: { a: { taskId: 'a' }, gone: { taskId: 'gone' } }, editedFiles: ['x.js'], lastSeenAt: 1 };
+	// This hook claimed b and released "gone"; meanwhile another hook saved a claim on c.
+	const ours = { sessionId: 'p', claims: { a: { taskId: 'a' }, b: { taskId: 'b' } }, editedFiles: ['x.js', 'y.js'], lastSeenAt: 3 };
+	const disk = { sessionId: 'p', claims: { a: { taskId: 'a', renewed: true }, gone: { taskId: 'gone' }, c: { taskId: 'c' } }, editedFiles: ['x.js', 'z.js'], lastSeenAt: 2 };
+	const merged = mergeSessionChanges(start, ours, disk);
+	assert.deepEqual(Object.keys(merged.claims).sort(), ['a', 'b', 'c']);
+	assert.equal(merged.claims.a.renewed, true, 'an entry this hook did not touch keeps the other hook\'s version');
+	assert.deepEqual(merged.editedFiles.sort(), ['x.js', 'y.js', 'z.js']);
+	assert.equal(merged.lastSeenAt, 3);
+	assert.equal(mergeSessionChanges(start, ours, null), ours, 'nothing on disk: our session as it is');
+});
+
+test('R1 a lock whose holder died is taken over; one just released (Windows lingers) is not broken early; a live holder\'s is kept', async () => {
+	const home = scratch();
+	const file = path.join(home, 'session.json');
+	const lock = `${file}.lock`;
+	const deadOwner = () => fs.writeFileSync(path.join(lock, 'owner.json'), JSON.stringify({ pid: 2 ** 22 + 4321, at: Date.now() })); // no such process
+	// Just written by a holder that has exited: could be a release Windows has not finished — not broken within the grace.
+	fs.mkdirSync(lock);
+	deadOwner();
+	const early = await acquireLock(file, { waitMs: 300 });
+	assert.equal(early.acquired, false, 'a dead owner\'s fresh lock is given its grace');
+	// The same lock seconds later: abandoned, taken over at once.
+	const old = new Date(Date.now() - 5000);
+	fs.utimesSync(lock, old, old);
 	const started = Date.now();
-	const result = await runCommand(`sh -c '${marker}; true' & ${marker}`, { cwd: scratch(), timeoutSec: 1 });
+	const release = await acquireLock(file, { waitMs: 3000 });
+	assert.equal(release.acquired, true);
+	assert.ok(Date.now() - started < 1000, 'no waiting on an abandoned lock');
+	assert.equal(fs.existsSync(`${lock}.break`), false, 'the takeover guard is gone');
+	// While we hold it, a second taker (live holder = us) waits and then goes on unlocked.
+	const second = await acquireLock(file, { waitMs: 300 });
+	assert.equal(second.acquired, false);
+	release();
+	assert.equal(fs.existsSync(`${file}.lock`), false, 'released');
+	const third = await acquireLock(file, { waitMs: 300 });
+	assert.equal(third.acquired, true);
+	third();
+});
+
+test('R2 a timed-out gate kills everything it started', async () => {
+	// The command starts a grandchild that records its pid and sleeps; after the timeout both must be gone.
+	const dir = scratch();
+	const pidFile = path.join(dir, 'grandchild.pid');
+	fs.writeFileSync(path.join(dir, 'grandchild.js'), 'require("node:fs").writeFileSync(process.argv[2], String(process.pid)); setTimeout(() => {}, 60000);\n');
+	fs.writeFileSync(path.join(dir, 'parent.js'), 'require("node:child_process").spawn(process.execPath, ["grandchild.js", process.argv[2]], { stdio: "ignore" }); setTimeout(() => {}, 60000);\n');
+	const started = Date.now();
+	const result = await runCommand(`node parent.js "${pidFile}"`, { cwd: dir, timeoutSec: 2 });
 	assert.equal(result.timedOut, true);
-	assert.ok(Date.now() - started < 5000);
-	await new Promise((resolve) => { setTimeout(resolve, 300); });
-	const left = spawnSync('pgrep', ['-f', marker], { encoding: 'utf8' }).stdout.trim();
-	assert.equal(left, '', `orphans still running: ${left}`);
+	assert.ok(Date.now() - started < 8000, 'returns promptly after the timeout');
+	assert.ok(fs.existsSync(pidFile), 'the grandchild did start');
+	const pid = Number(fs.readFileSync(pidFile, 'utf8'));
+	await new Promise((resolve) => { setTimeout(resolve, 800); });
+	assert.equal(isAliveCheck(pid), false, `grandchild ${pid} is still running`);
 });
 
 test('R3 the gate cache tells large trees apart', () => {
@@ -249,6 +305,24 @@ test('R23 an internal hook error is logged, never printed, and the agent still g
 	assert.equal(result.status, 0);
 	assert.deepEqual(result.json, {});
 	assert.match(fs.readFileSync(path.join(home, 'errors.log'), 'utf8'), /codex PostToolUse/);
+});
+
+test('R24 settings and file checks hold whatever spelling of the path is used (Windows: C:/ vs C:\\, 8.3 names; macOS: /tmp)', () => {
+	const repo = makeRepo();
+	const link = path.join(scratch(), 'linked-repo');
+	fs.symlinkSync(repo, link, 'junction');
+	const env = { INTROSIO_HOME: scratch() };
+	// Saved through one spelling (what the CLI resolves) …
+	saveConfig(updateRepo(loadConfig(env), link, { mode: 'local', gate: 'node -v' }), env);
+	// … found through another (what git reports), and the other way round.
+	assert.equal(repoSettings(loadConfig(env), git(repo, 'rev-parse', '--show-toplevel')).mode, 'local');
+	assert.equal(repoSettings(loadConfig(env), repo).gate, 'node -v');
+	assert.equal(Object.keys(loadConfig(env).repos).length, 1, 'one key for one repository');
+	assert.equal(repoKey(link), repoKey(repo));
+	// A file named through the other spelling is still inside the repository.
+	assert.equal(relativeInside(repo, path.join(link, 'src', 'api.js')), 'src/api.js');
+	assert.equal(relativeInside(link, path.join(repo, 'README.md')), 'README.md');
+	assert.equal(relativeInside(repo, path.join(scratch(), 'elsewhere.js')), null);
 });
 
 let failed = 0;

@@ -9,6 +9,28 @@ export const COMMAND_NAME = 'introsio-execute';
 export const HOOK_MARK = 'introsio-hook.mjs';
 export const DESCRIPTION = 'Execute an Introsio Developer Mode project task by task (claim → work → complete)';
 
+/**
+ * The commands every agent gets. `template` is a file in templates/; `$ARGUMENTS`
+ * in it is rendered the way each agent passes what the user typed after the command.
+ */
+export const COMMANDS = Object.freeze([
+	{ name: COMMAND_NAME, template: 'execute.md', description: DESCRIPTION, argumentHint: '<project name or id>', inputLabel: 'Project name or id' },
+	{
+		name: 'introsio-pause',
+		template: 'pause.md',
+		description: 'Pause the Introsio task(s) you hold so they resume exactly later — note, next steps, git snapshot (out of usage, context or time)',
+		argumentHint: '[--release] [anything the next session should know]',
+		inputLabel: 'Optional: --release, and a note',
+	},
+	{
+		name: 'introsio-resume',
+		template: 'resume.md',
+		description: 'Resume paused or interrupted Introsio work exactly where it stopped — after checking the repository still matches',
+		argumentHint: '[task id, or project name or id]',
+		inputLabel: 'Optional: task id or project',
+	},
+]);
+
 export class Writer {
 	constructor({ dryRun = false } = {}) {
 		this.dryRun = dryRun;
@@ -127,14 +149,42 @@ export function nodePathOf(command) {
 	return match ? match[1] : '';
 }
 
-/** The execute procedure, with `$ARGUMENTS` rendered the way an agent's commands expect. */
-export function executeText(ctx, argumentToken = '$ARGUMENTS') {
-	return ctx.executeTemplate.replaceAll('$ARGUMENTS', argumentToken).trim();
+/** A command's procedure, with `$ARGUMENTS` rendered the way an agent's commands expect. */
+export function commandText(ctx, command = COMMANDS[0], argumentToken = '$ARGUMENTS') {
+	const template = ctx.templates?.[command.name] ?? (command.name === COMMAND_NAME ? ctx.executeTemplate : '');
+	return String(template ?? '').replaceAll('$ARGUMENTS', argumentToken).trim();
 }
 
-export function markdownCommand(ctx, { frontmatter = {}, argumentToken } = {}) {
-	const lines = Object.entries({ description: DESCRIPTION, ...frontmatter }).map(([key, value]) => `${key}: ${value}`);
-	return `---\n${lines.join('\n')}\n---\n\n${executeText(ctx, argumentToken)}\n`;
+/** The execute procedure (kept for callers that only know that one). */
+export function executeText(ctx, argumentToken = '$ARGUMENTS') {
+	return commandText(ctx, COMMANDS[0], argumentToken);
+}
+
+/** A Markdown command file: frontmatter, then the procedure. `argumentHint: true` adds each command's own hint. */
+export function markdownCommand(ctx, { command = COMMANDS[0], frontmatter = {}, argumentToken, argumentHint = false } = {}) {
+	const fields = { description: command.description, ...(argumentHint ? { 'argument-hint': command.argumentHint } : {}), ...frontmatter };
+	const lines = Object.entries(fields).map(([key, value]) => `${key}: ${value}`);
+	return `---\n${lines.join('\n')}\n---\n\n${commandText(ctx, command, argumentToken)}\n`;
+}
+
+/** Writes one file per command (`fileFor(name)` → path); returns the paths. */
+export function writeCommands(writer, fileFor, render) {
+	return COMMANDS.map((command) => {
+		const file = fileFor(command.name);
+		writer.writeText(file, render(command));
+		return file;
+	});
+}
+
+export function removeCommands(writer, fileFor) {
+	for (const command of COMMANDS) writer.remove(fileFor(command.name));
+}
+
+/** "yes" when every command file is there, "partial — re-run int setup" when some are, "no" otherwise. */
+export function commandsStatus(fileFor) {
+	const present = COMMANDS.filter((command) => fs.existsSync(fileFor(command.name))).length;
+	if (present === COMMANDS.length) return 'yes';
+	return present === 0 ? 'no' : 'partial — re-run int setup';
 }
 
 export function existsDir(dir) {

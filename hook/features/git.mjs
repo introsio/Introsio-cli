@@ -62,7 +62,12 @@ export function gitInvocations(command) {
  */
 export function pushDecision({ command, mode, git, defaultBranch }) {
 	const pushes = gitInvocations(command).filter((call) => call.sub === 'push');
-	if (pushes.length === 0 || mode === 'off') return { type: 'none' };
+	if (pushes.length === 0) return { type: 'none' };
+	// Pause snapshots (refs/introsio/paused/*) hold unfinished work and stay on this computer, whatever the mode.
+	if (pushes.some(({ args }) => args.some((arg) => /(^|:|\+)refs\/introsio\//.test(arg)))) {
+		return { type: 'deny', message: 'Introsio: refs/introsio/* are local pause snapshots of unfinished work — they are never pushed. To hand work over, commit it on a branch and push that (or /introsio-pause --release).' };
+	}
+	if (mode === 'off') return { type: 'none' };
 	if (mode === 'local') {
 		return { type: 'deny', message: 'Introsio (local mode): this repository stays on this computer — git push is blocked. Commit locally; switch with `int mode github` if it should go to GitHub.' };
 	}

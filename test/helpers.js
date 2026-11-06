@@ -24,6 +24,9 @@ export function makeRepo() {
 	git(dir, 'config', 'user.email', 'test@example.com');
 	git(dir, 'config', 'user.name', 'Test');
 	git(dir, 'config', 'commit.gpgsign', 'false');
+	// Byte-exact checkouts whatever the machine's global setting (Windows often has autocrlf on),
+	// so tests that compare file contents after a git restore mean the same everywhere.
+	git(dir, 'config', 'core.autocrlf', 'false');
 	fs.writeFileSync(path.join(dir, 'README.md'), 'hello\n');
 	git(dir, 'add', '.');
 	git(dir, 'commit', '-q', '-m', 'init');

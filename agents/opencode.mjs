@@ -1,7 +1,7 @@
 // OpenCode: MCP in opencode.json, /introsio-execute in commands/, and a plugin (OpenCode has no shell hooks).
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { join, editJson, markdownCommand, existsDir, existsFile, hasCli, SERVER_NAME, COMMAND_NAME } from './common.mjs';
+import { join, editJson, markdownCommand, writeCommands, removeCommands, commandsStatus, existsDir, existsFile, hasCli, SERVER_NAME, COMMAND_NAME } from './common.mjs';
 import { readJsonSafe, readText } from '../lib/jsonFile.mjs';
 import { xdgConfigHome } from '../lib/paths.mjs';
 
@@ -10,6 +10,7 @@ const paths = (ctx) => {
 	return {
 		config: ctx.scope === 'project' ? join(ctx.root, 'opencode.json') : join(base, 'opencode.json'),
 		command: join(base, 'commands', `${COMMAND_NAME}.md`),
+		commandFile: (name) => join(base, 'commands', `${name}.md`),
 		plugin: join(base, 'plugins', 'introsio.js'),
 	};
 };
@@ -43,21 +44,21 @@ export default {
 		});
 		report.connect = config.error ?? (config.manual ? `manual — add "mcp": { "${SERVER_NAME}": { "type": "remote", "url": "${ctx.url}" } } to ${p.config}` : config.changed ? 'added' : 'already connected');
 		report.next.push(`Sign in: opencode mcp auth ${SERVER_NAME}. Then in OpenCode: /${COMMAND_NAME} <project>`);
-		writer.writeText(p.command, markdownCommand(ctx));
+		writeCommands(writer, p.commandFile, (command) => markdownCommand(ctx, { command }));
 		writer.writeText(p.plugin, pluginSource(ctx, p.plugin));
 		return report;
 	},
 	uninstall(ctx, writer) {
 		const p = paths(ctx);
 		editJson(writer, p.config, (value) => (value.mcp?.[SERVER_NAME] ? (delete value.mcp[SERVER_NAME], true) : false));
-		writer.remove(p.command);
+		removeCommands(writer, p.commandFile);
 		writer.remove(p.plugin);
 	},
 	status(ctx) {
 		const p = paths(ctx);
 		return {
 			connect: readJsonSafe(p.config, {}).mcp?.[SERVER_NAME] ? 'yes' : 'no',
-			command: existsFile(p.command),
+			command: commandsStatus(p.commandFile),
 			hooks: existsFile(p.plugin) === 'yes' ? 'blocking (plugin)' : 'not installed',
 		};
 	},
