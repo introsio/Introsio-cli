@@ -41,10 +41,41 @@ export function shellCommands(command) {
 	return commands;
 }
 
+const SHELLS = new Set(['sh', 'bash', 'zsh', 'dash', 'ksh']);
+/** Words that run the rest of the line as a command (`env A=1 git …`, `sudo git …`). */
+const PREFIXES = new Set(['env', 'sudo', 'command', 'exec', 'nohup', 'time', 'nice']);
+const MAX_WRAPPER_DEPTH = 3;
+
+/**
+ * The script a wrapper runs, when the command is one: `bash -c "…"`, `sh -lc '…'`,
+ * `eval "…"` (also behind env/sudo prefixes). Its text is checked like a command
+ * line of its own, so `bash -c "git push origin main"` is guarded the same as the
+ * bare push. A guard-rail for agents, not a sandbox: a script file or another
+ * interpreter (`python -c`) is not looked into.
+ */
+function wrappedScript(words) {
+	let i = 0;
+	while (i < words.length && (PREFIXES.has(words[i].split('/').pop()) || /^[A-Za-z_][A-Za-z0-9_]*=/.test(words[i]))) i += 1;
+	const head = words[i]?.split('/').pop();
+	if (head === 'eval') return words.slice(i + 1).join(' ');
+	if (!SHELLS.has(head)) return null;
+	for (let j = i + 1; j < words.length; j += 1) {
+		// `-c` alone or in a cluster (`-lc`, `-ec`); the script is the next word.
+		if (/^-[a-zA-Z]*c[a-zA-Z]*$/.test(words[j])) return words[j + 1] ?? null;
+		if (!words[j].startsWith('-')) return null;
+	}
+	return null;
+}
+
 /** Every `git … <sub>` invocation in a shell command line, as argv arrays after `git`. */
-export function gitInvocations(command) {
+export function gitInvocations(command, depth = 0) {
 	const out = [];
 	for (const words of shellCommands(command)) {
+		const script = depth < MAX_WRAPPER_DEPTH ? wrappedScript(words) : null;
+		if (script !== null) {
+			out.push(...gitInvocations(script, depth + 1));
+			continue;
+		}
 		const gitAt = words.findIndex((token) => token === 'git' || token.endsWith('/git'));
 		if (gitAt < 0) continue;
 		const args = words.slice(gitAt + 1);
@@ -78,10 +109,14 @@ export function pushDecision({ command, mode, git, defaultBranch }) {
 			return { type: 'deny', message: 'Introsio: force push is blocked. Use --force-with-lease on your own branch if you really must rewrite it.' };
 		}
 		if (args.includes('--mirror')) return { type: 'deny', message: 'Introsio: git push --mirror is blocked.' };
+		// Every local branch — the default one included — so it cannot be checked target by target.
+		if (args.includes('--all') || args.includes('--branches')) {
+			return { type: 'deny', message: `Introsio: git push --all is blocked — it pushes every local branch, "${main || 'the default branch'}" included. Push your own branch by name (git push -u origin <name>).` };
+		}
 		const positional = args.filter((arg) => !arg.startsWith('-'));
 		const deleting = args.includes('--delete') || args.includes('-d');
 		const refspecs = positional.slice(1);
-		if (args.includes('--all') || args.includes('--tags')) continue;
+		if (args.includes('--tags')) continue;
 		// A bare push goes where push.default sends it — possibly main from a branch with another name.
 		const bareTarget = () => {
 			const push = git.pushTarget?.();

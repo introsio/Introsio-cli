@@ -1,6 +1,6 @@
 // One table of cases per feature — pure decisions with fake git / clocks.
 import assert from 'node:assert/strict';
-import { pushDecision, scanDiff, scanText, gitInvocations } from '../hook/features/git.mjs';
+import { pushDecision, scanDiff, scanText, gitInvocations, secretsDecision } from '../hook/features/git.mjs';
 import { shippedDecision, planTestGate, runTestGate, resolveMode, porcelainPaths } from '../hook/features/gates.mjs';
 import { workerIdDecision, makeWorkerId } from '../hook/features/workerId.mjs';
 import { rereadDecision, leaseNote, recoveryNote, scopeNote } from '../hook/features/notes.mjs';
@@ -45,6 +45,21 @@ for (const [command, mode, expect] of [
 	['git status', 'local', 'none'],
 	['echo "git push origin main" > notes.txt', 'github', 'none'],
 	['git commit -m "fix; git push origin main"', 'github', 'none'],
+	// R25: every local branch at once — main included — cannot be checked by target.
+	['git push --all origin', 'github', 'deny'],
+	['git push origin --all', 'github', 'deny'],
+	['git push --branches origin', 'github', 'deny'],
+	['git push --tags origin', 'github', 'none'],
+	// R26: a shell wrapper runs its script; the script is checked like the bare command.
+	['bash -c "git push origin main"', 'github', 'deny'],
+	["sh -c 'git push origin main'", 'github', 'deny'],
+	['bash -lc "cd sub && git push origin HEAD:main"', 'github', 'deny'],
+	['eval "git push origin main"', 'github', 'deny'],
+	['env GIT_TRACE=1 bash -c "git push --force origin feature/x"', 'github', 'deny'],
+	['bash -c "bash -c \\"git push origin main\\""', 'github', 'deny'],
+	['bash -c "git push origin feature/x"', 'github', 'none'],
+	['bash -c "npm test"', 'github', 'none'],
+	['bash scripts/release.sh', 'github', 'none'],
 ]) {
 	test(`push guard [${mode}] ${command} → ${expect}`, () => {
 		assert.equal(pushDecision({ command, mode, git: fakeGit() }).type, expect);
@@ -81,6 +96,17 @@ test('secrets: .env is a secret file, .env.example is not', () => {
 test('gitInvocations finds subcommands past global options', () => {
 	assert.deepEqual(gitInvocations('cd x && git -c a=b --no-pager commit -m "msg; git push"').map((c) => c.sub), ['commit']);
 	assert.deepEqual(gitInvocations('git add . && git commit -m x; git push origin main').map((c) => c.sub), ['add', 'commit', 'push']);
+});
+test('gitInvocations looks inside shell wrappers (the secrets check sees a wrapped commit)', () => {
+	assert.deepEqual(gitInvocations('bash -c "git add . && git commit -m x"').map((c) => c.sub), ['add', 'commit']);
+	assert.deepEqual(gitInvocations('sudo sh -ec \'git commit -am x\'').map((c) => c.sub), ['commit']);
+	assert.deepEqual(gitInvocations('eval git push').map((c) => c.sub), ['push']);
+	assert.deepEqual(gitInvocations('echo "bash -c git push"').map((c) => c.sub), []);
+});
+test('secrets: a commit run through bash -c is scanned', () => {
+	const diff = `diff --git a/k.txt b/k.txt\n+++ b/k.txt\n@@ -0,0 +1 @@\n+key=${AWS}\n`;
+	const git = fakeGit({ diff: () => diff, run: () => ({ ok: true, out: '' }) });
+	assert.equal(secretsDecision({ command: 'bash -c "git add . && git commit -m wip"', git, readFile: () => '' }).type, 'deny');
 });
 
 // ── shipped gate ─────────────────────────────────────────────────────────────

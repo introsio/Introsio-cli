@@ -77,7 +77,7 @@ The hooks also include the following checks. Each one can be switched off
 | `stop-guard` | No finishing while a claimed task is open |
 | `test-gate` | `completeTask` waits for the repo's check command (`int gate set "npm test"`). Passes are cached per work tree, and a failure sends the last 40 lines back |
 | `shipped-gate` | **local** mode: work must be committed. **github** mode: committed, pushed, off the default branch, `outcome.branch` recorded |
-| `push-guard` | No push to the default branch, no force push, no mirror; in local mode, no push at all |
+| `push-guard` | No push to the default branch, no force push, no mirror, no `--all`; in local mode, no push at all. Also checked inside `bash -c` / `sh -c` / `eval` wrappers (a guard-rail, not a sandbox: script files and other interpreters are not inspected) |
 | `secrets` | Commits and pushes adding keys, private keys or `.env` files are refused, naming the file:line, never the value |
 | `scope` | One soft note per file edited outside the files the task names |
 | `worker-id` | Refuses a claim with another live session's workerId, and a second claim without one |
@@ -197,6 +197,8 @@ as a regression test in `test/edgecases.test.js` (same numbers).
 | R22 | A hand-broken settings file was silently replaced by the next command | Commands refuse to write a settings file they cannot read; hooks keep running on defaults |
 | R23 | Internal hook errors vanished | They go to `~/.introsio/errors.log` (1 MB, rotated); `int doctor` shows recent ones; the agent still gets valid output |
 | R24 | On Windows, git (`C:/…`), Node (`C:\…`) and temp folders (`MAHESH~1`) spell one folder three ways, so `int mode` / `int gate` settings were never found by the hooks and edited files looked "outside" the repo (found on the first Windows run) | One canonical spelling (`canonicalPath` / `repoKey` in `lib/paths.mjs`, case-insensitive on Windows) for every settings key and file comparison; CI now runs on Windows, macOS and Linux |
+| R25 | `git push --all origin` went through: the guard skipped `--all`, which pushes every local branch, the default one included | `--all` / `--branches` are refused in github mode; `--tags` still passes |
+| R26 | `bash -c "git push origin main"` (or a wrapped commit of a key) went through: the quoted script was one word with no `git` in it | `sh`/`bash`/`zsh`/`dash`/`ksh -c` and `eval` scripts are checked like the bare command (behind `env`/`sudo` prefixes, nested up to 3 levels) for both the push guard and the secrets check |
 
 Tested end to end with Claude Code 2.1.312 (headless `claude -p`, a stub Introsio
 MCP server over stdio, the installed hooks):
