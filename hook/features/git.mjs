@@ -81,7 +81,12 @@ export function pushDecision({ command, mode, git, defaultBranch }) {
 		const positional = args.filter((arg) => !arg.startsWith('-'));
 		const deleting = args.includes('--delete') || args.includes('-d');
 		const refspecs = positional.slice(1);
-		if (args.includes('--all') || args.includes('--tags')) continue;
+		// --all (and its newer spelling --branches) pushes every local branch, the
+		// default one included, so it cannot be checked target by target.
+		if (args.includes('--all') || args.includes('--branches')) {
+			return { type: 'deny', message: `Introsio: git push --all would also push the default branch${main ? ` "${main}"` : ''}. Push your own branch by name and open a pull request.` };
+		}
+		if (args.includes('--tags')) continue;
 		// A bare push goes where push.default sends it — possibly main from a branch with another name.
 		const bareTarget = () => {
 			const push = git.pushTarget?.();
