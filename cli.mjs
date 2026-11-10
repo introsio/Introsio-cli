@@ -21,6 +21,26 @@ import { sessionIsLive } from './hook/features/workerId.mjs';
 
 const KIT_SOURCE = path.dirname(fileURLToPath(import.meta.url));
 const DEFAULT_URL = 'https://api.introsio.app/mcp?toolset=developer';
+// Which tools the agents load: `developer` plans and executes; `execute` is the slim set for running a
+// plan that already exists (about a third of the definitions, so every turn is cheaper).
+const KIT_TOOLSETS = ['developer', 'execute', 'all'];
+
+/** `url` with its toolset replaced; a URL that cannot be parsed is left alone. */
+function withToolset(url, toolset) {
+	try {
+		const parsed = new URL(url);
+		parsed.searchParams.set('toolset', toolset);
+		return parsed.toString();
+	} catch {
+		return url;
+	}
+}
+
+/** The MCP URL a run of setup uses: --url, else the remembered one, else the default; --toolset switches its tools. */
+function mcpUrlFor(flags, config) {
+	const base = typeof flags.url === 'string' ? flags.url : (config.mcpUrl ?? DEFAULT_URL);
+	return typeof flags.toolset === 'string' && KIT_TOOLSETS.includes(flags.toolset) ? withToolset(base, flags.toolset) : base;
+}
 const KIT_DIRS = ['hook', 'lib'];
 const VERSION = JSON.parse(readText(path.join(KIT_SOURCE, 'package.json')) ?? '{"version":"0"}').version;
 
@@ -59,7 +79,7 @@ function context(flags, env = process.env) {
 		scope,
 		root,
 		platform: process.platform,
-		url: typeof flags.url === 'string' ? flags.url : (config.mcpUrl ?? DEFAULT_URL),
+		url: mcpUrlFor(flags, config),
 		kitSource: KIT_SOURCE,
 		kitInstallDir,
 		hookScript: path.join(kitInstallDir, 'hook', 'introsio-hook.mjs'),
@@ -104,6 +124,7 @@ function suggestGate(dir) {
 }
 
 function setup(flags) {
+	if (flags.toolset !== undefined && !KIT_TOOLSETS.includes(flags.toolset)) return fail(`--toolset takes one of: ${KIT_TOOLSETS.join(', ')}`);
 	const ctx = context(flags);
 	if (flags.print) {
 		const agent = agentById(String(flags.print));
@@ -135,9 +156,9 @@ function setup(flags) {
 			out(`● ${agent.label}: failed — ${error.message}`);
 		}
 	}
-	if (!flags['dry-run'] && typeof flags.url === 'string') {
+	if (!flags['dry-run'] && (typeof flags.url === 'string' || typeof flags.toolset === 'string')) {
 		const config = loadConfig(undefined, { strict: true });
-		config.mcpUrl = flags.url;
+		config.mcpUrl = ctx.url;
 		saveConfig(config);
 	}
 	out('');
@@ -454,7 +475,7 @@ function doctor(flags) {
 function help() {
 	out(`int ${VERSION} — the Introsio agent kit: connect coding agents to Introsio and keep it updated while they execute
 
-  int setup [--agents claude,codex,gemini,cursor,opencode,vscode,windsurf] [--project <repo>] [--url <mcp url>] [--dry-run]
+  int setup [--agents claude,codex,gemini,cursor,opencode,vscode,windsurf] [--project <repo>] [--toolset developer|execute|all] [--url <mcp url>] [--dry-run]
   int uninstall [--agents …] [--project <repo>]
   int status                       what is installed, per agent and for this repo
   int doctor                       check the install and fire a test hook

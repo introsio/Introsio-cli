@@ -210,7 +210,7 @@ MCP server over stdio, the installed hooks):
 ## Commands
 
 ```
-int setup [--agents a,b] [--project <repo>] [--url <mcp url>] [--dry-run]
+int setup [--agents a,b] [--project <repo>] [--toolset developer|execute|all] [--url <mcp url>] [--dry-run]
 int uninstall [--agents a,b] [--project <repo>]
 int status | doctor
 int mode github|local|off|auto
@@ -225,6 +225,12 @@ int print-execute | print-pause | print-resume
 - `--project <repo>` installs into one repository instead (committed, so a team
   shares it). The kit is copied to `<repo>/.introsio/kit` and the configs use
   repo-relative paths.
+- `--toolset` chooses which Introsio tools the agents load, and is remembered.
+  `developer` (the default) plans and executes. `execute` is the slim set for
+  running a plan that already exists — the 13 tools of the claim → complete loop,
+  pause / resume and the hand-off, about a third of the tool definitions an agent
+  carries on every turn. It cannot create or edit a plan; switch back with
+  `int setup --toolset developer`.
 - `--url` points the agents at another MCP server, such as a local backend; it is
   remembered.
 - A config file with comments is never rewritten. `setup` prints what to add to it.

@@ -5,7 +5,7 @@ Project: $ARGUMENTS (a name or id — if empty, call getProjects and ask which D
 1. Start or resume: getProjectState { projectId } for the overview and the context revision, then getProjectContext { projectId } once. Work inside the context: use its tech stack, never cross a "must" constraint, follow its conventions, do not reopen accepted decisions (record a new one with recordProjectDecision).
 2. Loop:
    a. claimTask { projectId, workerId } — use the SAME workerId on every call (the one claimTask returns, or the one the Introsio hook gave you). It hands you the spec, subtask waves, inputs (what earlier tasks produced) and, when the project has one, the GitHub repository.
-   b. Do the work. For each subtask: updateSubtask { taskId, subtaskId, workerId, statusState: "in_progress" }, do it, then updateSubtask { …, completed: true }.
+   b. Do the work, one subtask at a time in the order of subtaskWaves. When a subtask is done: updateSubtask { taskId, subtaskId, workerId, completed: true } — ONE call per subtask. Do not mark it in_progress first: your claim already shows you are working, and every extra call costs a turn. (Only when several workers share one task: mark the subtask in_progress before you start, so they see it is taken.)
    c. Check it: run the tests or commands that prove it works.
    d. Commit it. If the claim named a repository: work on your own branch off its defaultBranch, push it, and record outcome.branch. Otherwise keep it local — commit only, no push.
    e. completeTask { taskId, workerId, outcome: { summary: what you produced (names, shapes, commit id), verification: what you ran and its result, files: paths you changed } }. If it is refused, fix exactly what the error names and call it again.

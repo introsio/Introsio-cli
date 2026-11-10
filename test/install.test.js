@@ -216,6 +216,37 @@ test('--url and --dry-run', () => {
 	assert.equal(json(path.join(home, '.gemini', 'settings.json')).mcpServers.introsio.httpUrl, 'http://localhost:8080/mcp', 'the URL is remembered');
 });
 
+test('--toolset switches the tools the agents load, is remembered, and keeps a custom server', () => {
+	const home = scratch();
+	const cursor = () => json(path.join(home, '.cursor', 'mcp.json')).mcpServers.introsio.url;
+	cli(home, ['setup', '--agents', 'cursor', '--toolset', 'execute']);
+	assert.equal(cursor(), 'https://api.introsio.app/mcp?toolset=execute');
+	cli(home, ['setup', '--agents', 'gemini']);
+	assert.equal(json(path.join(home, '.gemini', 'settings.json')).mcpServers.introsio.httpUrl, 'https://api.introsio.app/mcp?toolset=execute', 'remembered');
+	cli(home, ['setup', '--agents', 'cursor', '--toolset', 'developer']);
+	assert.equal(cursor(), 'https://api.introsio.app/mcp?toolset=developer', 'and switched back');
+	cli(home, ['setup', '--agents', 'cursor', '--url', 'http://localhost:8080/mcp', '--toolset', 'execute']);
+	assert.equal(cursor(), 'http://localhost:8080/mcp?toolset=execute');
+	const bad = cli(home, ['setup', '--agents', 'cursor', '--toolset', 'everything']);
+	assert.match(bad.out + (bad.err ?? ''), /--toolset takes one of/);
+	assert.equal(cursor(), 'http://localhost:8080/mcp?toolset=execute', 'a refused toolset changes nothing');
+});
+
+// Every tool a kit command or a hook message tells the agent to call must exist in the slim
+// `execute` toolset, or an agent set up with --toolset execute is told to call a tool it lacks.
+test('the execute toolset has every tool the kit commands name', () => {
+	const index = read(path.join(KIT, '..', 'backend-node', 'src', 'mcp', 'tools', 'index.js'));
+	const list = index.slice(index.indexOf('export const EXECUTE_TOOLS'), index.indexOf(']);', index.indexOf('export const EXECUTE_TOOLS')));
+	const tools = new Set([...list.matchAll(/'([A-Za-z]+)'/g)].map((match) => match[1]));
+	assert.ok(tools.size >= 10, 'the list was read');
+	for (const template of ['execute.md', 'pause.md', 'resume.md']) {
+		const text = read(path.join(KIT, 'templates', template));
+		for (const [, name] of text.matchAll(/\b((?:get|update|claim|complete|pause|record)[A-Z][A-Za-z]+)\b/g)) {
+			assert.ok(tools.has(name), `${template} names ${name}, which the execute toolset does not load`);
+		}
+	}
+});
+
 test('mode / gate / features / claims / stats / doctor commands', () => {
 	const home = scratch();
 	const repo = makeRepo();
