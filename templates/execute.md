@@ -9,6 +9,8 @@ Project: $ARGUMENTS (a name or id — if empty, call getProjects and ask which D
    c. Check it: run the tests or commands that prove it works.
    d. Commit it. If the claim named a repository: work on your own branch off its defaultBranch, push it, and record outcome.branch. Otherwise keep it local — commit only, no push.
    e. completeTask { taskId, workerId, outcome: { summary: what you produced (names, shapes, commit id), verification: what you ran and its result, files: paths you changed } }. If it is refused, fix exactly what the error names and call it again.
+      Size the outcome to the task, not to a template: a small change is one line ("Renamed X to Y — abc1234"); a task that later tasks build on adds only the names and shapes they need (endpoints, exports, schema fields, decisions). Never narrate the steps you took, repeat the spec, or list what files already shows. verification is the command and its result in one line.
+      The outcome is the record — do not also write a recap in chat. Between tasks say at most one short line ("Done: <title>") and claim the next one; save the wrap-up for when the project is done or you stop.
    f. The answer lists nowReady and openTasks — claim the next task. Do not re-read the schedule after every task.
 3. If you cannot finish a task: updateTask { taskId, workerId, statusState: "blocked" } and tell the user why. Never leave a claimed task silently open.
 4. When claimTask answers reason "complete": updateProjectState { projectId, handoff: true, execution: { description: where things stand, status: "done" } }. Reason "paused": the rest of the ready work is paused — tell the user (/introsio-resume takes a paused task back after checking the repository); never claim a paused task without resume: true.
