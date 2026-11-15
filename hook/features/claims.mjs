@@ -66,10 +66,27 @@ const lostReason = (data) => {
 	return `worker ${data.claimedBy?.workerId ?? data.details?.claimedBy?.workerId} holds it now`;
 };
 
+/** The code the server answers when a plan limit refuses a call (backend services/billing, ADR-0016). */
+const PLAN_LIMIT_REACHED = 'PLAN_LIMIT_REACHED';
+/** The daily MCP budgets: once one is used up, every metered call is refused until it resets. */
+const DAILY_BUDGETS = new Set(['mcpPersonalPerDay', 'mcpDeveloperPerDay']);
+
+/**
+ * The note for a call refused because the day's budget is used up. Nothing to
+ * release: a refused claimTask leaves no claim (so the agent may stop), and
+ * pausing or completing a held task is a reporting call the budget never refuses.
+ */
+function budgetNote(data) {
+	if (data?.code !== PLAN_LIMIT_REACHED || !DAILY_BUDGETS.has(data.key)) return null;
+	return `Introsio budget reached, resets ${data.resetsAt ?? 'at midnight (the user\'s time)'}; pause what you hold and tell the user.`;
+}
+
 /** Applies one Introsio tool answer to the session. */
 export function applyIntrosioResult(session, { name, args = {}, result }, now) {
 	session.introsio = true;
 	const data = result?.data;
+	const budget = result?.ok ? null : budgetNote(data);
+	if (budget && !(session.notes ?? []).includes(budget)) session.notes = [...(session.notes ?? []), budget].slice(-3);
 	if (!result?.ok && lostClaim(session, { name, args, result })) {
 		const claim = session.claims[String(args.taskId)];
 		delete session.claims[String(args.taskId)];

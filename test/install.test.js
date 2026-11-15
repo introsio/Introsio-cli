@@ -235,7 +235,8 @@ test('--toolset switches the tools the agents load, is remembered, and keeps a c
 // Every tool a kit command or a hook message tells the agent to call must exist in the slim
 // `execute` toolset, or an agent set up with --toolset execute is told to call a tool it lacks.
 test('the execute toolset has every tool the kit commands name', () => {
-	const index = read(path.join(KIT, '..', 'backend-node', 'src', 'mcp', 'tools', 'index.js'));
+	// The list lives in toolsets.js (tools/index.js re-exports it).
+	const index = read(path.join(KIT, '..', 'backend-node', 'src', 'mcp', 'tools', 'toolsets.js'));
 	const list = index.slice(index.indexOf('export const EXECUTE_TOOLS'), index.indexOf(']);', index.indexOf('export const EXECUTE_TOOLS')));
 	const tools = new Set([...list.matchAll(/'([A-Za-z]+)'/g)].map((match) => match[1]));
 	assert.ok(tools.size >= 10, 'the list was read');
