@@ -11,13 +11,14 @@ import { Writer, nodePathOf, COMMANDS, commandText } from './agents/common.mjs';
 import { FEATURES, MODES, loadConfig, saveConfig, repoSettings, updateRepo, featureOn } from './lib/config.mjs';
 import { MAX_GATE_TIMEOUT_SEC } from './hook/features/gates.mjs';
 import { createGit } from './lib/git.mjs';
-import { homeDir, introsioDir, kitDir, logPath, configPath } from './lib/paths.mjs';
+import { homeDir, introsioDir, kitDir, logPath, configPath, canonicalPath } from './lib/paths.mjs';
 import { readText } from './lib/jsonFile.mjs';
 import { loadOtherSessions, clearSessions } from './hook/state.mjs';
 import { summarize } from './hook/features/log.mjs';
 import { runGateCommand } from './hook/features/gates.mjs';
 import { listLocalPauses, removeLocalPause } from './hook/features/pause.mjs';
 import { sessionIsLive } from './hook/features/workerId.mjs';
+import { treeKey, WAIT_STEP_SEC } from './hook/features/parallel.mjs';
 
 const KIT_SOURCE = path.dirname(fileURLToPath(import.meta.url));
 const DEFAULT_URL = 'https://api.introsio.app/mcp?toolset=developer';
@@ -191,11 +192,20 @@ function uninstall(flags) {
 	out('Your settings and log in ~/.introsio stay; delete that folder to remove them too.');
 }
 
-function repoRoot(flags) {
-	const root = createGit(path.resolve(typeof flags.repo === 'string' ? flags.repo : '.')).root();
+/**
+ * The working tree a command runs in (`root`) and the repository's main checkout
+ * (`settingsRoot`, where `int mode` / `int gate` are kept): the same folder in an
+ * ordinary checkout; inside a linked worktree the settings stay repository-wide, so
+ * every parallel agent's worktree follows them.
+ */
+function repoRoots(flags) {
+	const git = createGit(path.resolve(typeof flags.repo === 'string' ? flags.repo : '.'));
+	const root = git.root();
 	if (!root) throw new Error('not inside a git repository (use --repo <dir>)');
-	return path.resolve(root);
+	return { root: path.resolve(root), settingsRoot: path.resolve(git.mainRoot() ?? root), git };
 }
+
+const repoRoot = (flags) => repoRoots(flags).settingsRoot;
 
 function status(flags) {
 	const ctx = context(flags);
@@ -209,9 +219,10 @@ function status(flags) {
 	const config = loadConfig(undefined, { strict: true });
 	out('');
 	out(`Features: ${Object.keys(FEATURES).map((name) => `${name}${featureOn(config, name) ? '' : ' (off)'}`).join(', ')}`);
-	const root = createGit(process.cwd()).root();
+	const here = createGit(process.cwd());
+	const root = here.root();
 	if (root) {
-		const settings = repoSettings(config, root);
+		const settings = repoSettings(config, root, here.mainRoot());
 		out(`This repo (${root}): mode ${settings.mode ?? 'auto (github if the project is linked to GitHub, else local)'} · test gate ${settings.gate ? `"${settings.gate}" (${settings.gateTimeoutSec}s)` : 'off'}`);
 	}
 	if (String(process.env.INTROSIO_HOOKS ?? '').toLowerCase() === 'off') out('INTROSIO_HOOKS=off is set in this shell — hooks do nothing here.');
@@ -238,7 +249,8 @@ function mode(positional, flags) {
 
 async function gate(positional, flags) {
 	const action = positional[1];
-	const root = repoRoot(flags);
+	// Settings are the repository's; `gate run` runs where you are (a worktree runs its own files).
+	const { settingsRoot: root, root: workRoot } = repoRoots(flags);
 	const config = loadConfig(undefined, { strict: true });
 	const settings = repoSettings(config, root);
 	if (action === 'set') {
@@ -256,8 +268,8 @@ async function gate(positional, flags) {
 		out(`${root}: test gate off`);
 	} else if (action === 'run') {
 		if (!settings.gate) return fail('no gate set — int gate set "<command>"');
-		out(`Running "${settings.gate}" in ${root} …`);
-		const result = await runGateCommand(settings.gate, root, settings.gateTimeoutSec);
+		out(`Running "${settings.gate}" in ${workRoot} …`);
+		const result = await runGateCommand(settings.gate, workRoot, settings.gateTimeoutSec);
 		out(result.output);
 		out(result.ok ? `✓ passed in ${Math.round(result.ms / 1000)}s` : result.timedOut ? `✗ timed out after ${settings.gateTimeoutSec}s` : `✗ failed (exit ${result.code})`);
 		if (!result.ok) process.exitCode = 1;
@@ -350,6 +362,95 @@ function paused(flags) {
 			}
 		}
 	}
+}
+
+const WORKTREE_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
+
+/**
+ * `int worktree add|list|remove`: one folder per parallel agent. Two agents in one
+ * working tree share one HEAD, index and set of files; a linked worktree gives each
+ * its own, while all of them share the repository — so a dependency's branch made in
+ * one worktree can be merged in another, and `int mode` / `int gate` apply to all.
+ */
+function worktree(positional, flags) {
+	const action = positional[1] ?? 'list';
+	const { settingsRoot, git } = repoRoots(flags);
+	const now = Date.now();
+	const liveIn = (dir) => loadOtherSessions('', now).filter((session) => session.root === treeKey(dir) && sessionIsLive(session, now));
+
+	if (action === 'add') {
+		const name = positional[2];
+		if (!name || !WORKTREE_NAME.test(name)) return fail('usage: int worktree add <name> [--base <ref>] [--branch <name>] [--dir <path>] — a name of letters, digits, ".", "_" or "-"');
+		const branch = typeof flags.branch === 'string' ? flags.branch : `agent/${name}`;
+		const dir = path.resolve(typeof flags.dir === 'string' ? flags.dir : path.join(path.dirname(settingsRoot), `${path.basename(settingsRoot)}-${name}`));
+		if (fs.existsSync(dir)) return fail(`${dir} already exists — choose another name, or --dir <path>`);
+		const base = typeof flags.base === 'string' ? flags.base : 'HEAD';
+		const existing = git.localBranchExists(branch);
+		const args = existing ? ['worktree', 'add', dir, branch] : ['worktree', 'add', '-b', branch, dir, base];
+		const result = git.run(args, { timeout: 120_000 });
+		if (!result.ok) return fail(`git ${args.join(' ')} failed: ${result.err || result.out}`);
+		const settings = repoSettings(loadConfig(undefined, { strict: true }), settingsRoot);
+		out(`Created ${dir} on branch ${branch}${existing ? ' (it already existed)' : ` from ${base}`}.`);
+		out('Start one agent in that folder (cd there, open the agent, run /introsio-execute <project>). Every worktree shares this repository, so');
+		out('a branch one agent makes can be merged by the next.');
+		out('Untracked files are not copied: install dependencies there (e.g. npm install) and copy any .env it needs; give each worktree its own port if the app runs a server.');
+		out(`Settings: mode ${settings.mode ?? 'auto'}, test gate ${settings.gate ? `"${settings.gate}"` : 'off'} — the repository's, in every worktree.`);
+		out(`When its work is merged: int worktree remove ${name}`);
+		return;
+	}
+
+	if (action === 'remove' || action === 'rm') {
+		const target = positional[2];
+		if (!target) return fail('usage: int worktree remove <name | path> [--force]');
+		const linked = git.worktrees().slice(1);
+		const wanted = canonicalPath(path.resolve(target));
+		const match = linked.find((entry) => canonicalPath(entry.path) === wanted)
+			?? linked.find((entry) => path.basename(entry.path) === `${path.basename(settingsRoot)}-${target}` || entry.branch === `agent/${target}` || entry.branch === target);
+		if (!match) return fail(`no worktree "${target}" — int worktree list shows them (the main checkout is never removed)`);
+		const busy = liveIn(match.path).find((session) => Object.keys(session.claims ?? {}).length > 0);
+		if (busy && !flags.force) {
+			return fail(`a live ${busy.agent ?? 'agent'} session (workerId ${busy.workerId ?? '?'}) still holds a task in ${match.path} — let it finish or pause first (--force removes it anyway)`);
+		}
+		const result = git.run(['worktree', 'remove', ...(flags.force ? ['--force'] : []), match.path], { timeout: 120_000 });
+		if (!result.ok) return fail(`${result.err || result.out} — commit or stash the work there first (--force throws it away)`);
+		out(`Removed ${match.path}.${match.branch ? ` Branch ${match.branch} is kept — merge it, or delete it with git branch -d ${match.branch}.` : ''}`);
+		return;
+	}
+
+	if (action === 'list' || action === 'ls') {
+		const entries = git.worktrees();
+		for (const [index, entry] of entries.entries()) {
+			const sessions = liveIn(entry.path);
+			out(`${index === 0 ? 'main' : '    '}  ${entry.path}  ${entry.branch ?? '(detached HEAD)'}${sessions.length > 1 ? `  ⚠ ${sessions.length} live agent sessions share this folder` : ''}`);
+			for (const session of sessions) {
+				const held = Object.values(session.claims ?? {});
+				out(`        ${session.agent ?? 'agent'} (workerId ${session.workerId ?? '?'})${held.length ? ` on ${held.map((claim) => `"${claim.title}"`).join(', ')}` : ', no task held'}`);
+			}
+		}
+		if (entries.length <= 1) out('Only the main checkout. Give each parallel agent its own folder: int worktree add <name>');
+		return;
+	}
+	return fail('usage: int worktree add <name> | list | remove <name>');
+}
+
+/**
+ * `int wait <seconds | ISO time>`: what an agent runs when claimTask answers that
+ * other workers hold the ready work. Waits until then, but at most --max seconds
+ * (WAIT_STEP_SEC by default, under agents' shell-tool time limits), so the agent
+ * claims again at least that often — a task finished early unlocks work at once.
+ */
+async function wait(positional, flags) {
+	const value = positional[1];
+	const max = flags.max !== undefined ? Number(flags.max) : WAIT_STEP_SEC;
+	if (!(max > 0) || max > 600) return fail('--max takes 1 to 600 seconds');
+	let until = Date.now() + max * 1000;
+	if (value !== undefined) {
+		until = /^\d+(\.\d+)?$/.test(value) ? Date.now() + Number(value) * 1000 : Date.parse(value);
+		if (!Number.isFinite(until)) return fail('usage: int wait <seconds | ISO time — e.g. the retryAfter claimTask gave> [--max <seconds>]');
+	}
+	const ms = Math.max(0, Math.min(until - Date.now(), max * 1000));
+	await new Promise((resolve) => { setTimeout(resolve, ms); });
+	out(`Waited ${Math.round(ms / 1000)}s. Now call claimTask { projectId, workerId } again.`);
 }
 
 function parseSince(value) {
@@ -486,6 +587,12 @@ function help() {
   int claims | claims clear        tasks your agents hold on this computer
   int stats [--since 7d] [--project <id>] [--json]
   int paused [--prune [--days 30]] work paused or interrupted on this computer, and how to resume it
+
+  int worktree add <name> [--base <ref>] [--branch <b>] [--dir <path>]
+                                   a folder of its own for one more parallel agent (branch agent/<name>)
+  int worktree list | remove <name> [--force]
+  int wait <seconds | ISO time> [--max 240]
+                                   what an agent runs when other workers hold the ready work, before claiming again
   int print-execute | print-pause | print-resume
                                    a command's procedure, to paste where an agent has no commands
 
@@ -517,6 +624,8 @@ async function run(command, positional, flags) {
 			case 'claims': return claims(positional);
 			case 'stats': return stats(flags);
 			case 'paused': return paused(flags);
+			case 'worktree': case 'worktrees': return worktree(positional, flags);
+			case 'wait': return wait(positional, flags);
 			case 'print-execute': case 'print-pause': case 'print-resume': {
 				const chosen = COMMANDS.find((item) => item.name === `introsio-${command.slice('print-'.length)}`);
 				return out(commandText(context(flags), chosen, chosen.name === 'introsio-execute' ? 'the project the user names' : 'what the user names'));

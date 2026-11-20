@@ -6,6 +6,29 @@ project uses [semantic versioning](https://semver.org/).
 
 ## [Unreleased]
 
+Run `int setup` again after updating, so the installed hooks include the new features.
+
+### Added
+- Parallel agents (README "Parallel agents"):
+  - `int worktree add <name>` / `list` / `remove`: one folder (git worktree) per
+    agent, on branch `agent/<name>`; `list` shows which agent works where, and
+    `remove` refuses while a live agent holds a task there or files are uncommitted.
+  - `shared-tree` hook: a claim in a folder another live agent session is working
+    in is refused once, naming `int worktree add`.
+  - `inputs` hook: after a claim, the dependency branches the task's starting point
+    lacks, with the merge command.
+  - `wait` hook and `int wait <retryAfter>`: when other workers hold all the ready
+    work, the agent waits (at most 4 minutes per call) and claims again instead of
+    stopping; one stop is sent back.
+- `/introsio-execute` merges the branches of the tasks a task builds on before it
+  starts, records `outcome.branch` in local mode too, waits on `all_claimed` /
+  `awaiting_completion`, and describes the final integration task.
+
+### Changed
+- `int mode` / `int gate` are repository-wide: set inside a linked worktree they
+  apply to the main checkout and every worktree, and `int gate run` runs in the
+  worktree you are in.
+
 ## [0.3.0]
 
 Run `int setup` again after updating: the installed hook engine is versioned, and

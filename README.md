@@ -96,6 +96,9 @@ The hooks also include the following checks. Each one can be switched off
 | `reread` | Refuses once a context read the agent already has, or a schedule read straight after `nowReady` |
 | `log` | `~/.introsio/log.jsonl`, summed up by `int stats` |
 | `pause` | Snapshots the working tree when a task is paused, and checks the repository against a pause before it is resumed (below) |
+| `shared-tree` | Refuses once a claim in a folder another live agent session is working in, naming `int worktree add` (below); the second claim goes through |
+| `inputs` | After a claim, names each dependency branch (`inputs[].outcome.branch`) the task's starting point does not contain yet, with the merge command |
+| `wait` | When other workers hold all the ready work (`all_claimed`), tells the agent to `int wait` and claim again, and sends one stop back |
 
 The gates and git guards only act in sessions that have used Introsio, and only
 on tasks that session claimed. Completing a personal task, or pushing in a repo
@@ -176,6 +179,55 @@ the lease to expire. Completing the task removes its snapshot;
 Tests: `test/pause.test.js` (real git repositories, the real hook script), and the
 server's `backend-node/src/tests/agentPause.test.js`.
 
+## Parallel agents
+
+Several agents can run one project at the same time — any mix of Claude Code,
+Codex, Cursor and the rest. Introsio's server hands each ready task to exactly one
+worker (an atomic claim), passes each task the outcomes of the tasks it builds on,
+and orders the work so the longest chain starts first. On your computer, four rules
+keep the agents from getting in each other's way:
+
+1. **One folder per agent.** Two agents in one working tree share one branch and
+   one set of files: a `git switch` by one moves the other's next commit, `git add
+   -A` takes the other's half-done files, and every test run sees the other's
+   unfinished code. Give each agent its own git worktree:
+
+   ```bash
+   int worktree add w2          # ../<repo>-w2 on branch agent/w2
+   ```
+
+   ```bash
+   int worktree list            # every worktree and the agent working in it
+   ```
+
+   ```bash
+   int worktree remove w2       # once its work is merged; the branch is kept
+   ```
+
+   All worktrees share the repository, so a branch made in one is visible in the
+   others, and `int mode` / `int gate` (set once, anywhere) apply to all of them —
+   a worktree with settings of its own keeps them. Untracked files (`node_modules`,
+   `.env`) are not copied, and a dev server needs its own port per worktree.
+   The `shared-tree` hook refuses, once, a claim made in a folder another live
+   agent is working in.
+2. **Start from the code you build on.** A task's dependencies may still be on
+   their own branches. `/introsio-execute` merges each `inputs[].outcome.branch`
+   before the work starts (github mode: off the default branch; local mode: into the
+   current branch), and records `outcome.branch` in both modes so the tasks after it
+   can do the same. The `inputs` hook names any branch that is still missing, with
+   the command.
+3. **Wait, don't quit.** When every ready task is held by another worker, claimTask
+   answers `all_claimed` with `retryAfter`. The agent runs `int wait <retryAfter>`
+   (at most 4 minutes per call) and claims again — a task finished early unlocks the
+   next ones at once. The `wait` hook sends a stop back once; after an hour the
+   agent reports what is still held and stops.
+4. **End with integration.** A plan with parallel work ends with one task that
+   depends on every task nothing else depends on: it merges all their branches,
+   runs the whole test suite and fixes what breaks between the pieces.
+
+The Free plan runs one worker per project at a time (`parallelClaimsPerProject`);
+Pro runs five. Tests: `test/parallel.test.js`.
+
 ## Edge cases (researched, reproduced, fixed)
 
 Each of these was first reproduced against the earlier kit, then fixed, and is kept
@@ -209,6 +261,10 @@ as a regression test in `test/edgecases.test.js` (same numbers).
 | R24 | On Windows, git (`C:/…`), Node (`C:\…`) and temp folders (`MAHESH~1`) spell one folder three ways, so `int mode` / `int gate` settings were never found by the hooks and edited files looked "outside" the repo (found on the first Windows run) | One canonical spelling (`canonicalPath` / `repoKey` in `lib/paths.mjs`, case-insensitive on Windows) for every settings key and file comparison; CI now runs on Windows, macOS and Linux |
 | R25 | `git push --all origin` went through: the guard skipped `--all`, which pushes every local branch, the default one included | `--all` / `--branches` are refused in github mode; `--tags` still passes |
 | R26 | `bash -c "git push origin main"` (or a wrapped commit of a key) went through: the quoted script was one word with no `git` in it | `sh`/`bash`/`zsh`/`dash`/`ksh -c` and `eval` scripts are checked like the bare command (behind `env`/`sudo` prefixes, nested up to 3 levels) for both the push guard and the secrets check |
+| R27 | Two agents started in one checkout overwrote each other's branch and committed each other's files | `shared-tree` refuses, once, a claim in a folder another live session holds a task in; `int worktree add` gives each agent its own (`test/parallel.test.js`) |
+| R28 | `int mode` / `int gate` set in the main checkout did nothing inside a linked worktree (its path is another settings key) | Settings are looked up for the worktree, then for the repository's main checkout (`git rev-parse --git-common-dir`); the CLI writes them repository-wide |
+| R29 | A task whose dependency sat on an unmerged branch started from the default branch without that code | `/introsio-execute` merges `inputs[].outcome.branch` first; the `inputs` hook names each missing branch with its merge command |
+| R30 | A parallel worker that found every ready task taken stopped for good, leaving the rest to one agent | claimTask's `all_claimed` → `int wait` and claim again; the `wait` hook sends one stop back. The server answers `all_claimed` (retry now) when every task it tried was won by workers claiming at the same moment, instead of a misleading "nothing can start" |
 
 Tested end to end with Claude Code 2.1.312 (headless `claude -p`, a stub Introsio
 MCP server over stdio, the installed hooks):
@@ -228,6 +284,8 @@ int gate set "<cmd>" [--timeout <sec>] | gate off | gate run | gate
 int features | enable <name> | disable <name>
 int claims | claims clear
 int paused [--prune [--days 30]]
+int worktree add <name> [--base <ref>] [--branch <b>] [--dir <path>] | worktree list | worktree remove <name> [--force]
+int wait <seconds | ISO time> [--max 240]
 int stats [--since 7d] [--project <id>] [--json]
 int print-execute | print-pause | print-resume
 ```

@@ -50,7 +50,7 @@ export function saveSession(session, env) {
 	writeJson(path.join(sessionsDir(env), `${safeName(session.sessionId)}.json`), session);
 }
 
-const KEYED = ['claims', 'paused', 'pending', 'pendingPause', 'contextRevision', 'contextRead', 'rereadDenied', 'resumeChecked'];
+const KEYED = ['claims', 'paused', 'pending', 'pendingPause', 'contextRevision', 'contextRead', 'rereadDenied', 'resumeChecked', 'sharedTreeAllowed'];
 const LISTS = ['editedFiles', 'warnedFiles'];
 const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
 const isMap = (value) => !!value && typeof value === 'object' && !Array.isArray(value);

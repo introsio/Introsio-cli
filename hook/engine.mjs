@@ -15,6 +15,7 @@ import { agentPid } from '../lib/processTree.mjs';
 import { loadSession, saveSession, saveSessionUnlocked, loadOtherSessions, sessionExists, sessionFile } from './state.mjs';
 import { applyIntrosioResult, updateClaimsFromTranscript, isCompletionCall } from './features/claims.mjs';
 import { stopDecision } from './features/stopGuard.mjs';
+import { sharedTreeDecision, inputsNote, trackWaiting, waitStopDecision, treeKey } from './features/parallel.mjs';
 import { makeWorkerId, workerIdDecision } from './features/workerId.mjs';
 import { shippedDecision, planTestGate, runTestGate, resolveMode, workTreeKey } from './features/gates.mjs';
 import { pushDecision, secretsDecision } from './features/git.mjs';
@@ -90,7 +91,10 @@ export async function handleEvent(evt, deps = {}) {
 
 		let gitHandle = null;
 		const git = () => (gitHandle ??= (deps.createGit ?? createGit)(evt.cwd ?? session.cwd ?? process.cwd()));
-		const settingsHere = () => repoSettings(config, git().root());
+		// Inside a linked worktree, the repository's settings apply unless the worktree has its own.
+		const settingsHere = () => repoSettings(config, git().root(), git().mainRoot());
+		let othersCache = null;
+		const others = () => (othersCache ??= loadOtherSessions(session.sessionId, now, env));
 
 		switch (evt.event) {
 			case 'session-start': {
@@ -115,7 +119,8 @@ export async function handleEvent(evt, deps = {}) {
 					const claim = session.claims[String(tool.args?.taskId ?? '')];
 					const completing = claim && isCompletionCall(tool.name, tool.args);
 					answer = firstDeny(
-						() => (on('worker-id') ? workerIdDecision(session, loadOtherSessions(session.sessionId, now, env), tool, now, deps.isAlive) : NONE),
+						() => (on('worker-id') ? workerIdDecision(session, others(), tool, now, deps.isAlive) : NONE),
+						() => (on('shared-tree') ? sharedTreeDecision(session, others(), tool, { root: git().root(), now, alive: deps.isAlive }) : NONE),
 						() => (on('reread') ? rereadDecision(session, tool) : NONE),
 						() => (tool.name === 'pauseTask' && on('pause') ? pauseDecision({ git: git(), args: tool.args, session, now, budgetMs: deps.snapshotBudgetMs }) : NONE),
 						() => (completing && on('shipped-gate') ? shippedDecision({ git: git(), settings: settingsHere(), claim, args: tool.args, session }) : NONE),
@@ -126,7 +131,7 @@ export async function handleEvent(evt, deps = {}) {
 					}
 				} else if (tool.kind === 'shell' && GIT_WRITE.test(tool.command ?? '')) {
 					const root = git().root();
-					const settings = repoSettings(config, root);
+					const settings = repoSettings(config, root, git().mainRoot());
 					const claim = Object.values(session.claims)[0];
 					const active = session.introsio || settings.mode || settings.gate;
 					if (!root || !active) break;
@@ -153,6 +158,7 @@ export async function handleEvent(evt, deps = {}) {
 					const hadClaims = Object.keys(session.claims).length;
 					const pausedClaim = tool.name === 'pauseTask' ? session.claims[String(tool.args?.taskId ?? '')] : null;
 					applyIntrosioResult(session, { name: tool.name, args: tool.args, result: evt.result }, now);
+					if (tool.name === 'claimTask') notes.push(...claimNotes({ tool, result: evt.result, session, git, settingsHere, on }));
 					if (on('pause')) notes.push(...pauseNotes({ tool, result: evt.result, session, pausedClaim, git, config, env, now, deps }));
 					if (on('log')) writeLog(logRow(session, evt, { name: tool.name, args: tool.args, result: evt.result }, now), env);
 					if (tool.name === 'claimTask' && Object.keys(session.claims).length > hadClaims && !session.modeNoted && on('shipped-gate')) {
@@ -191,6 +197,7 @@ export async function handleEvent(evt, deps = {}) {
 					updateClaimsFromTranscript(session, evt.transcriptPath, now, fs);
 				}
 				answer = stopDecision(session, evt, now);
+				if (answer.type === 'none' && on('wait')) answer = waitStopDecision(session, now);
 				break;
 			}
 			default:
@@ -211,6 +218,23 @@ export async function handleEvent(evt, deps = {}) {
 }
 
 /**
+ * Features `shared-tree`, `inputs` and `wait`, after a claimTask answer: remember the
+ * working tree this session works in (so a second agent in the same folder is
+ * caught), name the dependency branches the task's starting point lacks, and turn a
+ * "nothing free right now" answer into a wait instead of a stop.
+ */
+function claimNotes({ tool, result, session, git, settingsHere, on }) {
+	const notes = [];
+	const data = result?.ok ? result.data : null;
+	if (on('wait')) notes.push(trackWaiting(session, { name: tool.name, args: tool.args, result }, session.lastSeenAt));
+	if (data?.claimed !== true) return notes;
+	const root = git().root();
+	if (root) session.root = treeKey(root);
+	if (root && on('inputs')) notes.push(inputsNote({ git: git(), data, mode: resolveMode(settingsHere(), { repository: data.repository }) }));
+	return notes;
+}
+
+/**
  * Feature `pause`, after an Introsio answer: keep the snapshot of a pause that
  * landed, drop it once the task is done, check the repository against any pause
  * an answer carries, and say so when a task was left by a session that died.
@@ -220,7 +244,7 @@ function pauseNotes({ tool, result, session, pausedClaim, git, config, env, now,
 	const notes = [];
 	const root = () => git().root();
 	const gatePassed = () => {
-		const settings = repoSettings(config, root());
+		const settings = repoSettings(config, root(), git().mainRoot());
 		if (!settings.gate) return null;
 		const key = workTreeKey(git(), settings.gate);
 		return !!key && readJsonSafe(gateCachePath(env), {})[root()]?.key === key;
