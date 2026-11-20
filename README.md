@@ -328,7 +328,7 @@ The package is `introsio` on npm (commands `int` and `introsio`).
 3. Tag the release; `.github/workflows/agent-kit-release.yml` runs the tests, checks the tag against the version, and publishes with provenance:
 
 ```bash
-git tag agent-kit-v0.3.0 && git push origin agent-kit-v0.3.0
+git tag agent-kit-v0.4.0 && git push origin agent-kit-v0.4.0
 ```
 
 To publish by hand instead: `npm login`, then `npm publish` from this folder (the tests run first via `prepublishOnly`).

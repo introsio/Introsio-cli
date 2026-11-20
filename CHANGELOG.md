@@ -6,7 +6,12 @@ project uses [semantic versioning](https://semver.org/).
 
 ## [Unreleased]
 
-Run `int setup` again after updating, so the installed hooks include the new features.
+## [0.4.0]
+
+Parallel agents on one project. Run `int setup` again after updating: the
+installed hook engine is versioned, and `int doctor` reports one that is behind.
+New hook features are on by default; `int disable shared-tree | inputs | wait`
+turns one off.
 
 ### Added
 - Parallel agents (README "Parallel agents"):
