@@ -21,10 +21,11 @@ npm install -g introsio       # keeps the `int` command (`introsio` works too)
 int setup                     # connect your agents, once per computer
 ```
 
-From a clone of this repository, before the package is published:
+From a clone, to run the code in a checkout instead of the published package (in
+the Introsio monorepo this folder is `agent-kit/`):
 
 ```bash
-node agent-kit/cli.mjs setup
+node cli.mjs setup            # from the monorepo root: node agent-kit/cli.mjs setup
 ```
 
 `setup` finds the agents on this computer, or takes `--agents claude,codex,…`. It
@@ -65,6 +66,15 @@ the loop.
   decision: it is let go with a visible warning and not asked again. Agents whose
   hooks don't see MCP calls have the open set rebuilt from the transcript, read
   incrementally.
+- **When the server takes a task away**, the hook lets go of it and says why, so
+  the stop is never held for work nobody can finish: the task was deleted, another
+  worker holds it now, or the person reset the project's execution
+  (`CLAIM_REVOKED_BY_RESET`: that work no longer counts, so the agent leaves it and
+  claims the next).
+- **When a daily MCP budget is used up** (`PLAN_LIMIT_REACHED`), the agent is told
+  when it resets and to pause what it holds. A refused `claimTask` leaves no claim,
+  so it may stop; pausing and completing are reporting calls the budget never
+  refuses.
 - A hook costs **no tokens** unless it prints. The engine decides in under a
   millisecond; one hook process, including Node start-up, takes about 50 ms.
   `INTROSIO_HOOKS=off` turns every hook off for a session.
@@ -255,15 +265,25 @@ these often: run `int doctor` after updating an agent.
 
 The package is `introsio` on npm (commands `int` and `introsio`).
 
-1. Bump `version` in `package.json` (`int doctor` tells users on older hooks to re-run `int setup`), and merge.
+1. Bump `version` in `package.json` and describe the release in `CHANGELOG.md` (`int doctor` tells users on older hooks to re-run `int setup`), and merge.
 2. Add the repository secret `NPM_TOKEN` once (an npm Automation token that may publish `introsio`).
 3. Tag the release; `.github/workflows/agent-kit-release.yml` runs the tests, checks the tag against the version, and publishes with provenance:
 
 ```bash
-git tag agent-kit-v0.1.0 && git push origin agent-kit-v0.1.0
+git tag agent-kit-v0.3.0 && git push origin agent-kit-v0.3.0
 ```
 
 To publish by hand instead: `npm login`, then `npm publish` from this folder (the tests run first via `prepublishOnly`).
+
+The code is edited only in the Introsio monorepo's `agent-kit/` folder. The
+standalone [Introsio-cli](https://github.com/introsio/Introsio-cli) repository is
+a mirror of that folder, updated from the monorepo root (never edited directly):
+
+```bash
+git fetch cli
+git subtree split --prefix=agent-kit -b cli-only
+git push cli cli-only:main
+```
 
 ## License
 
